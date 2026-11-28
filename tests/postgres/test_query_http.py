@@ -7,6 +7,7 @@ from psycopg.errors import ForeignKeyViolation
 
 from mnemotrace.adapters.postgres import PostgresStorage
 from mnemotrace.adapters.postgres.operations import PostgresOperations
+from mnemotrace.application.operations import ClaimedOperation
 from mnemotrace.application.remember import RememberResult
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.ids import SessionId
@@ -142,7 +143,8 @@ def test_audit_pages_follow_sensitivity_and_source_erasure(
             queue = PostgresOperations(scope.connections)
             job = await queue.claim()
             assert (
-                job is not None and job.operation_id == accepted.json()["operation_id"]
+                isinstance(job, ClaimedOperation)
+                and job.operation_id == accepted.json()["operation_id"]
             )
             storage = PostgresStorage(scope.connections, owner_id=scope.owner)
             async with storage.session(scope.space_id, write=True) as writer:
@@ -361,7 +363,7 @@ def test_publish_requires_matching_audit_rows_and_operation_space(
             audit_path = accepted.headers["Location"] + "/fact-changes"
             queue = PostgresOperations(scope.connections)
             job = await queue.claim()
-            assert job is not None
+            assert isinstance(job, ClaimedOperation)
             storage = PostgresStorage(scope.connections, owner_id=scope.owner)
             subject = Entity(scope.space_id, "合成事实")
             saved = fact(subject, resource_id("independent"))

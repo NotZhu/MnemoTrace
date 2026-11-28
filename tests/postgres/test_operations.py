@@ -28,7 +28,7 @@ from mnemotrace.application import remember as remember_app
 from mnemotrace.application.operations import ClaimedOperation, OperationRunner
 from mnemotrace.application.profile_refresh import ProfileRefreshRunner
 from mnemotrace.application.remember import MessageInput, Remember, RememberResult
-from mnemotrace.application.task_policy import MAX_ATTEMPTS
+from mnemotrace.application.task_policy import MAX_ATTEMPTS, ClaimOutcome
 from mnemotrace.domain.ids import SessionId, SpaceId
 from mnemotrace.ports.inference import LLM, InvalidStructuredOutput
 from mnemotrace.ports.storage import SpaceSession, SpaceUnavailable
@@ -544,7 +544,10 @@ def test_http_rejects_invalid_batch_or_missing_models(database: PgDatabase) -> N
             assert (
                 await scope.status(f"{scope.path}/operations/{uuid4().hex}")
             ).status_code == 404
-            assert await PostgresOperations(scope.connections).claim() is None
+            assert (
+                await PostgresOperations(scope.connections).claim()
+                is ClaimOutcome.EMPTY
+            )
 
     run(exercise())
 
@@ -869,7 +872,8 @@ def test_expired_lease_cannot_mark_failure_or_discard_messages(
             queue = PostgresOperations(scope.connections)
             job = await queue.claim()
             assert (
-                job is not None and job.operation_id == submitted.json()["operation_id"]
+                isinstance(job, ClaimedOperation)
+                and job.operation_id == submitted.json()["operation_id"]
             )
             _set_due(database, job.operation_id)
             assert not await queue.has_active_lease(job)
@@ -1011,12 +1015,12 @@ def test_expired_lease_rolls_back_then_recovers_and_has_a_crash_budget(
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 job = await queue.claim()
                 assert (
-                    job is not None
+                    isinstance(job, ClaimedOperation)
                     and job.operation_id == crashed.json()["operation_id"]
                 )
                 assert job.attempt == attempt
                 _set_due(database, job.operation_id)
-            assert await queue.claim() is None
+            assert await queue.claim() is ClaimOutcome.SETTLED
             state = (await scope.status(crashed.headers["Location"])).json()
             assert state["status"] == "failed"
             assert state["attempts"] == MAX_ATTEMPTS
@@ -1171,7 +1175,10 @@ def test_erasing_inference_in_progress_removes_the_pending_payload(
             else:
                 assert facts.json()["items"] == []
             assert (await scope.submit(session, "key", _FACT)).status_code == 404
-            assert await PostgresOperations(scope.connections).claim() is None
+            assert (
+                await PostgresOperations(scope.connections).claim()
+                is ClaimOutcome.EMPTY
+            )
 
     run(exercise())
 

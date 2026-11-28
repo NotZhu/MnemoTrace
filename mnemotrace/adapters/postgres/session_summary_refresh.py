@@ -8,9 +8,13 @@ from psycopg import AsyncConnection
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
-from ...application.operations import LeaseLost
 from ...application.session_summary_refresh import ClaimedSessionSummary
-from ...application.task_policy import LEASE_DURATION, MAX_ATTEMPTS
+from ...application.task_policy import (
+    LEASE_DURATION,
+    MAX_ATTEMPTS,
+    ClaimOutcome,
+    LeaseLost,
+)
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SpaceReader, SpaceSession
 from .reader import PostgresReader
@@ -42,7 +46,7 @@ class PostgresSessionSummaryRefresh:
     def __init__(self, pool: AsyncConnectionPool[AsyncConnection[TupleRow]]) -> None:
         self._pool = pool
 
-    async def claim(self) -> ClaimedSessionSummary | None:
+    async def claim(self) -> ClaimedSessionSummary | ClaimOutcome:
         """领取一项就绪摘要，或结算已耗尽尝试次数的租约。"""
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
@@ -58,7 +62,7 @@ class PostgresSessionSummaryRefresh:
             )
             row = await cursor.fetchone()
             if row is None:
-                return None
+                return ClaimOutcome.EMPTY
             space, session, owner, covered, target, attempts = row
             if attempts >= MAX_ATTEMPTS:
                 await conn.execute(
@@ -70,7 +74,7 @@ class PostgresSessionSummaryRefresh:
                     """,
                     (space, session),
                 )
-                return None
+                return ClaimOutcome.SETTLED
             token = uuid4().hex
             await conn.execute(
                 f"""

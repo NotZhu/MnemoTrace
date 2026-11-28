@@ -11,13 +11,7 @@ from typing import Literal, Protocol
 from ..diagnostics import correlate
 from ..domain.errors import InvalidMessage
 from ..domain.ids import SessionId, SpaceId
-from ..ports.inference import (
-    CompletionRefused,
-    CompletionTruncated,
-    InferenceError,
-    InferenceInputTooLarge,
-    InvalidStructuredOutput,
-)
+from ..ports.inference import InferenceInputTooLarge, InvalidStructuredOutput
 from ..ports.storage import (
     CommitOutcomeUnknown,
     SessionUnavailable,
@@ -33,27 +27,16 @@ from .remember import (
     RememberRetryRequired,
     RememberStage,
 )
-from .task_policy import ATTEMPT_TIMEOUT_SECONDS, retry_delay_for
+from .task_policy import (
+    ATTEMPT_TIMEOUT_SECONDS,
+    ClaimOutcome,
+    LeaseLost,
+    classify_worker_failure,
+    retry_delay_for,
+)
 
 type OperationStatus = Literal["queued", "running", "succeeded", "failed"]
 _LOG = logging.getLogger(__name__)
-
-
-def classify_worker_failure(
-    error: Exception, transient: Callable[[Exception], bool]
-) -> tuple[str, bool]:
-    """为通用任务异常返回稳定错误码及是否允许重试。"""
-    if isinstance(error, TimeoutError):
-        return "operation_timeout", True
-    if isinstance(
-        error, (InvalidStructuredOutput, CompletionRefused, CompletionTruncated)
-    ):
-        return "invalid_model_output", False
-    if isinstance(error, InferenceError):
-        return "inference_failed", transient(error)
-    if transient(error):
-        return "database_unavailable", True
-    return "internal_error", False
 
 
 class IdempotencyConflict(ValueError):
@@ -70,10 +53,6 @@ class WriteModelsUnavailable(RuntimeError):
 
 class OperationNotFound(LookupError):
     """指定的任务在绑定空间中不可用。"""
-
-
-class LeaseLost(RuntimeError):
-    """本次尝试已不能提交任务结果。"""
 
 
 @dataclass(frozen=True)
@@ -110,12 +89,8 @@ class ClaimedOperation:
 class OperationQueue(Protocol):
     """执行端使用的队列操作。"""
 
-    async def claim(self) -> ClaimedOperation | None:
-        """领取可执行的队首任务。
-
-        Returns:
-            领取到的任务。没有候选任务或只结算过期任务时返回 None。
-        """
+    async def claim(self) -> ClaimedOperation | ClaimOutcome:
+        """领取可执行的队首任务，或报告结算结果和空闲状态。"""
         ...
 
     async def complete(
@@ -151,10 +126,10 @@ class OperationRunner:
         self._transient = transient
 
     async def run_once(self) -> bool:
-        """处理一个可执行任务，并报告本次是否领到了工作。"""
+        """返回本轮是否领取或结算了一项任务。"""
         job = await self._queue.claim()
-        if job is None:
-            return False
+        if isinstance(job, ClaimOutcome):
+            return job is ClaimOutcome.SETTLED
         stage: RememberStage | None = None
 
         def enter_stage(value: RememberStage) -> None:

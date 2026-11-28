@@ -17,6 +17,7 @@ from mnemotrace.application.remember import (
     RememberResult,
     RememberStage,
 )
+from mnemotrace.application.task_policy import ClaimOutcome
 from mnemotrace.domain.ids import SessionId, SpaceId
 from mnemotrace.domain.space import Space
 from mnemotrace.ports.inference import LLM, Embedder
@@ -40,7 +41,7 @@ _JOB = ClaimedOperation(
 
 class _RecordingQueue:
     def __init__(self, job: ClaimedOperation, *, active_lease: bool = False) -> None:
-        self._pending: ClaimedOperation | None = job
+        self._pending: ClaimedOperation | ClaimOutcome = job
         self._active_lease = active_lease
         self.completions: list[tuple[ClaimedOperation, RememberResult]] = []
         self.lease_checks: list[ClaimedOperation] = []
@@ -48,8 +49,8 @@ class _RecordingQueue:
             tuple[ClaimedOperation, str, RememberStage | None, timedelta | None]
         ] = []
 
-    async def claim(self) -> ClaimedOperation | None:
-        job, self._pending = self._pending, None
+    async def claim(self) -> ClaimedOperation | ClaimOutcome:
+        job, self._pending = self._pending, ClaimOutcome.EMPTY
         return job
 
     async def complete(

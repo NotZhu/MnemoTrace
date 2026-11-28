@@ -1,16 +1,18 @@
 """持久化画像分组进度、时间唤醒和空间任务租约。"""
 
-from collections.abc import Mapping
-from datetime import timedelta
-from typing import cast
+import logging
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
+from datetime import datetime, timedelta
+from typing import NamedTuple, cast
 from uuid import uuid4
 
-from psycopg import AsyncConnection, sql
+from psycopg import AsyncConnection, Rollback, sql
 from psycopg.errors import LockNotAvailable
 from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
-from ...application.operations import LeaseLost, WriteModelsUnavailable
+from ...application.operations import WriteModelsUnavailable
 from ...application.profile import MAX_PROFILE_FACTS, ProfileEvidence
 from ...application.profile_refresh import (
     ClaimedProfileRefresh,
@@ -19,7 +21,12 @@ from ...application.profile_refresh import (
     ProfileSnapshot,
     SnapshotChanged,
 )
-from ...application.task_policy import LEASE_DURATION
+from ...application.task_policy import (
+    LEASE_DURATION,
+    MAX_ATTEMPTS,
+    ClaimOutcome,
+    LeaseLost,
+)
 from ...domain.entity import Entity
 from ...domain.enums import ProfileGroup
 from ...domain.ids import FactId, SpaceId
@@ -38,6 +45,10 @@ from .reader import PostgresReader
 from .session import PostgresSession
 from .storage import PostgresStorage, _session_transaction
 
+_LOG = logging.getLogger(__name__)
+_REFRESH_ENABLED = "(job.trigger_kind = 'manual' OR space.profile_auto_refresh)"
+_DUE_AT = "COALESCE(job.available_at, job.lease_until)"
+_CLAIM_PAGE_SIZE = 32
 _ACTIVE_LEASE = """
     space_id = %(space)s AND request_version = %(version)s AND status = 'running'
     AND lease_token = %(token)s AND lease_until > clock_timestamp()
@@ -54,6 +65,14 @@ _NEXT_DUE_SPACE = """
     ORDER BY profile_next_transition_at, space_id
     LIMIT 1 FOR UPDATE SKIP LOCKED
     """
+
+
+class _DueProfileRefresh(NamedTuple):
+    space_id: str
+    version: int
+    status: str
+    attempts: int
+    due_at: datetime
 
 
 def _lease(job: ClaimedProfileRefresh) -> dict[str, str | int]:
@@ -154,36 +173,31 @@ class PostgresProfileRefresh:
         except LockNotAvailable:
             return
 
-    async def claim(self) -> ClaimedProfileRefresh | None:
-        """领取就绪任务或接管过期租约，由执行端结算耗尽的尝试。"""
-        token = uuid4().hex
-        async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                f"""
-                SELECT job.space_id, space.owner_id, job.request_version, job.attempts
-                FROM {TABLE} AS job JOIN mnemotrace.spaces AS space USING (space_id)
-                WHERE job.status IN ('queued', 'running')
-                  AND (job.trigger_kind = 'manual' OR space.profile_auto_refresh)
-                  AND COALESCE(job.available_at, job.lease_until) <= statement_timestamp()
-                ORDER BY COALESCE(job.available_at, job.lease_until), job.space_id
-                LIMIT 1 FOR UPDATE OF job SKIP LOCKED
-                """
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            space, owner, version, attempts = row
-            await conn.execute(
-                f"""
-                UPDATE {TABLE} SET status = 'running', available_at = NULL,
-                    attempts = attempts + 1, lease_token = %s, lease_until = clock_timestamp() + %s
-                WHERE space_id = %s
-                """,
-                (token, LEASE_DURATION, space),
-            )
-        return ClaimedProfileRefresh(
-            SpaceId(space), owner, version, attempts + 1, token
+    async def claim(self) -> ClaimedProfileRefresh | ClaimOutcome:
+        """按到期顺序领取或结算一项仍可处理的任务。"""
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            aclosing(_due_candidates(conn)) as candidates,
+        ):
+            async for candidate in candidates:
+                if candidate.attempts < MAX_ATTEMPTS:
+                    job = await _claim_ready(conn, candidate)
+                    if job is not None:
+                        return job
+                elif candidate.status == "running" and await _settle_expired(
+                    conn, candidate
+                ):
+                    break
+            else:
+                return ClaimOutcome.EMPTY
+        _LOG.warning(
+            "画像刷新租约耗尽已结算 space_id=%s version=%d attempts=%d",
+            candidate.space_id,
+            candidate.version,
+            candidate.attempts,
         )
+        return ClaimOutcome.SETTLED
 
     @staticmethod
     async def _pending(reader: SpaceReader) -> dict[ProfileGroup, int]:
@@ -301,6 +315,7 @@ class PostgresProfileRefresh:
         code: str,
         retry_delay: timedelta | None,
         *,
+        snapshot_changed: bool,
         snapshot: ProfileSnapshot | None,
         at: float,
     ) -> None:
@@ -319,7 +334,7 @@ class PostgresProfileRefresh:
                 row = await cursor.fetchone()
                 assert row is not None
                 (followup_at,) = row
-                if code == "profile_snapshot_changed" and (
+                if snapshot_changed and (
                     retry_delay is None or followup_at is not None
                 ):
                     await _requeue(conn, job.space_id)
@@ -341,6 +356,109 @@ class PostgresProfileRefresh:
                     await _settle(conn, job.space_id, code)
         except SpaceUnavailable:
             return
+
+
+async def _due_candidates(
+    conn: AsyncConnection[TupleRow],
+) -> AsyncGenerator[_DueProfileRefresh, None]:
+    after = ""
+    params: dict[str, str | datetime] = {}
+    while True:
+        # 同一轮使用固定的数据库时间。按索引键继续查找，跳过的候选留给下一轮。
+        cursor = await conn.execute(
+            f"""
+            SELECT job.space_id, job.request_version, job.status, job.attempts,
+                {_DUE_AT} AS due_at
+            FROM {TABLE} AS job
+            WHERE job.status IN ('queued', 'running') AND {_DUE_AT} <= transaction_timestamp()
+              {after}
+            ORDER BY due_at, job.space_id
+            LIMIT {_CLAIM_PAGE_SIZE}
+            """,
+            params,
+        )
+        page = [_DueProfileRefresh(*row) for row in await cursor.fetchall()]
+        for candidate in page:
+            yield candidate
+        if len(page) < _CLAIM_PAGE_SIZE:
+            return
+        last = page[-1]
+        after = f"AND ({_DUE_AT}, job.space_id) > (%(due_at)s, %(space_id)s)"
+        params = {"due_at": last.due_at, "space_id": last.space_id}
+
+
+async def _lock_candidate(
+    conn: AsyncConnection[TupleRow], candidate: _DueProfileRefresh
+) -> tuple[str, datetime | None] | None:
+    cursor = await conn.execute(
+        f"""
+        SELECT space.owner_id, job.followup_at
+        FROM {TABLE} AS job JOIN mnemotrace.spaces AS space USING (space_id)
+        WHERE job.space_id = %(space_id)s AND job.request_version = %(version)s
+          AND job.status = %(status)s AND job.attempts = %(attempts)s
+          AND {_DUE_AT} = %(due_at)s AND {_DUE_AT} <= statement_timestamp()
+          AND {_REFRESH_ENABLED}
+        FOR UPDATE OF job SKIP LOCKED
+        """,
+        candidate._asdict(),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    owner, followup_at = row
+    return owner, followup_at
+
+
+async def _settle_expired(
+    conn: AsyncConnection[TupleRow], candidate: _DueProfileRefresh
+) -> bool:
+    space = SpaceId(candidate.space_id)
+    async with conn.transaction() as attempt:
+        # 与发布共用锁顺序。复核失败时回滚保存点，释放已取得的空间锁。
+        cursor = await conn.execute(
+            """
+            SELECT 1 FROM mnemotrace.spaces
+            WHERE space_id = %s FOR UPDATE SKIP LOCKED
+            """,
+            (space.value,),
+        )
+        if await cursor.fetchone() is None:
+            return False
+        locked = await _lock_candidate(conn, candidate)
+        if locked is None:
+            raise Rollback(attempt)
+        _, followup_at = locked
+        if followup_at is not None:
+            await _requeue(conn, space)
+        else:
+            await _settle(conn, space, "worker_lease_expired")
+        return True
+    return False
+
+
+async def _claim_ready(
+    conn: AsyncConnection[TupleRow], candidate: _DueProfileRefresh
+) -> ClaimedProfileRefresh | None:
+    locked = await _lock_candidate(conn, candidate)
+    if locked is None:
+        return None
+    owner, _ = locked
+    token = uuid4().hex
+    await conn.execute(
+        f"""
+        UPDATE {TABLE} SET status = 'running', available_at = NULL,
+            attempts = attempts + 1, lease_token = %s, lease_until = clock_timestamp() + %s
+        WHERE space_id = %s
+        """,
+        (token, LEASE_DURATION, candidate.space_id),
+    )
+    return ClaimedProfileRefresh(
+        SpaceId(candidate.space_id),
+        owner,
+        candidate.version,
+        candidate.attempts + 1,
+        token,
+    )
 
 
 async def _read_group_evidence(

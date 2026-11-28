@@ -12,7 +12,14 @@ import pytest
 
 from mnemotrace import worker
 from mnemotrace.adapters.postgres.storage import _return_committed_connection
-from mnemotrace.application.operations import OperationRunner
+from mnemotrace.application.operations import (
+    ClaimedOperation,
+    OperationQueue,
+    OperationRunner,
+)
+from mnemotrace.application.remember import Remember
+from mnemotrace.application.task_policy import ClaimOutcome
+from mnemotrace.domain.ids import SessionId, SpaceId
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.__main__ import main as server_main
 
@@ -97,6 +104,38 @@ def test_http_limits_only_apply_to_http_process(
     settings = run_worker.await_args_list[0].args[0]
     assert isinstance(settings, RuntimeSettings)
     assert settings.postgres_dsn == "dbname=unused"
+
+
+def test_worker_polls_ready_work_before_sleeping_after_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        job = ClaimedOperation(
+            operation_id="ready",
+            space_id=SpaceId("space"),
+            owner_id="owner",
+            session_id=SessionId("session"),
+            messages=(),
+            received_at=1.0,
+            attempt=1,
+            lease_token="lease",
+        )
+        queue = Mock(spec=OperationQueue)
+        queue.claim.side_effect = [ClaimOutcome.SETTLED, job, ClaimOutcome.EMPTY]
+        remember = Mock(spec=Remember)
+        stopping = asyncio.Event()
+        runner = OperationRunner(queue, Mock(return_value=remember), lambda _: False)
+
+        async def idle(delay: float) -> None:
+            assert queue.claim.await_count == 3
+            remember.remember.assert_awaited_once()
+            assert delay == 1
+            stopping.set()
+
+        monkeypatch.setattr(asyncio, "sleep", idle)
+        await worker._consume(runner, stopping)
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("stop_signal", (signal.SIGINT, signal.SIGTERM))

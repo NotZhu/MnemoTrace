@@ -12,7 +12,8 @@ from uuid import uuid4
 import psycopg
 import pytest
 from httpx import ASGITransport, AsyncClient
-from psycopg import AsyncConnection, sql
+from psycopg import AsyncConnection, AsyncCursor, sql
+from psycopg.abc import Params, QueryNoTemplate
 from psycopg.rows import TupleRow
 
 from mnemotrace import worker
@@ -23,6 +24,7 @@ from mnemotrace.adapters.postgres.identity import issue_key
 from mnemotrace.adapters.postgres.operations import PostgresOperations
 from mnemotrace.adapters.postgres.pool import ConnectionPool, runtime_pool
 from mnemotrace.adapters.postgres.profile_refresh import (
+    _CLAIM_PAGE_SIZE,
     _NEXT_DUE_SPACE,
     PostgresProfileRefresh,
     _group_evidence_query,
@@ -33,10 +35,12 @@ from mnemotrace.application import profile_refresh
 from mnemotrace.application.operations import OperationRunner
 from mnemotrace.application.profile import MAX_PROFILE_FACTS
 from mnemotrace.application.profile_refresh import (
+    ClaimedProfileRefresh,
     ProfileRefreshRunner,
     ProfileSnapshot,
 )
 from mnemotrace.application.remember import Remember
+from mnemotrace.application.task_policy import MAX_ATTEMPTS, ClaimOutcome
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import ProfileGroup
 from mnemotrace.domain.fact import Fact
@@ -260,6 +264,227 @@ def _make_claimable(database: PgDatabase, space_id: SpaceId) -> None:
             """,
             (space_id.value,),
         )
+
+
+def test_exhausted_profile_settlement_skips_a_busy_space(database: PgDatabase) -> None:
+    def state(space_id: SpaceId) -> TupleRow:
+        with psycopg.connect(database.admin) as conn:
+            row = conn.execute(
+                """
+                SELECT status, attempts, lease_token, lease_until, error_code
+                FROM mnemotrace.profile_refreshes WHERE space_id = %s
+                """,
+                (space_id.value,),
+            ).fetchone()
+        assert row is not None
+        return row
+
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as first,
+            _http_space(database) as second,
+            runtime_pool(RuntimeSettings(database.runtime), max_size=3) as connections,
+        ):
+            await first.submit()
+            queue = PostgresProfileRefresh(connections)
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                job = await queue.claim()
+                assert isinstance(job, ClaimedProfileRefresh)
+                assert job.space_id == first.id and job.attempt == attempt
+                _make_claimable(database, first.id)
+            expired = state(first.id)
+            assert expired[:2] == ("running", MAX_ATTEMPTS)
+
+            first_storage = PostgresStorage(connections, owner_id=first.owner)
+            second_storage = PostgresStorage(connections, owner_id=second.owner)
+            await _write_fact(second, second_storage, "ready")
+            await second.submit()
+            model = _Model()
+            runner = first.runner(connections, model)
+            async with first_storage.session(first.id, write=True):
+                assert await runner.run_once()
+                assert state(first.id) == expired
+                assert (await second.view())["refresh_status"] == "succeeded"
+
+            assert sorted(
+                await asyncio.gather(runner.run_once(), runner.run_once())
+            ) == [
+                False,
+                True,
+            ]
+            assert state(first.id) == (
+                "failed",
+                MAX_ATTEMPTS,
+                None,
+                None,
+                "worker_lease_expired",
+            )
+            assert model.prompts == [["ready"]]
+
+    run(exercise())
+
+
+def test_profile_claim_uses_due_order_across_ready_and_exhausted_jobs(
+    isolated_database: PgDatabase,
+) -> None:
+    database = isolated_database
+    with psycopg.connect(database.admin) as conn:
+        conn.execute("""
+            INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
+            VALUES ('earliest', 'owner', 'fixture', 0),
+                   ('exhausted', 'owner', 'fixture', 0),
+                   ('latest', 'owner', 'fixture', 0)
+            """)
+        conn.execute("""
+            INSERT INTO mnemotrace.profile_refreshes (space_id, available_at)
+            VALUES ('earliest', to_timestamp(1)), ('latest', to_timestamp(3))
+            """)
+        conn.execute(
+            """
+            INSERT INTO mnemotrace.profile_refreshes
+                (space_id, status, attempts, available_at, lease_token, lease_until)
+            VALUES ('exhausted', 'running', %s, NULL, 'expired', to_timestamp(2))
+            """,
+            (MAX_ATTEMPTS,),
+        )
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            queue = PostgresProfileRefresh(connections)
+            first = await queue.claim()
+            assert isinstance(first, ClaimedProfileRefresh)
+            assert first.space_id == SpaceId("earliest")
+            assert await queue.claim() is ClaimOutcome.SETTLED
+            last = await queue.claim()
+            assert isinstance(last, ClaimedProfileRefresh)
+            assert last.space_id == SpaceId("latest")
+            assert await queue.claim() is ClaimOutcome.EMPTY
+
+    run(exercise())
+
+
+def test_profile_claim_continues_after_a_page_of_locked_candidates(
+    isolated_database: PgDatabase,
+) -> None:
+    database = isolated_database
+    expired_count = _CLAIM_PAGE_SIZE + 1
+    ready_space = SpaceId(f"{expired_count + 1:06}")
+    with psycopg.connect(database.admin) as conn:
+        conn.execute(
+            """
+            WITH inserted AS (
+                INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
+                SELECT lpad(i::text, 6, '0'), 'owner', 'fixture', 0
+                FROM generate_series(1, %s::integer) AS i
+                RETURNING space_id
+            )
+            INSERT INTO mnemotrace.profile_refreshes
+                (space_id, status, attempts, available_at, lease_token, lease_until)
+            SELECT space_id, 'running', %s, NULL, 'expired', to_timestamp(1)
+            FROM inserted
+            """,
+            (expired_count, MAX_ATTEMPTS),
+        )
+        conn.execute(
+            """
+            INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
+            VALUES (%s, 'owner', 'fixture', 0)
+            """,
+            (ready_space.value,),
+        )
+        conn.execute(
+            """
+            INSERT INTO mnemotrace.profile_refreshes (space_id, available_at)
+            VALUES (%s, to_timestamp(1))
+            """,
+            (ready_space.value,),
+        )
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            queue = PostgresProfileRefresh(connections)
+            with psycopg.connect(database.admin) as locked:
+                locked.execute(
+                    "SELECT space_id FROM mnemotrace.spaces WHERE space_id <= %s FOR UPDATE",
+                    (f"{_CLAIM_PAGE_SIZE:06}",),
+                )
+                assert await queue.claim() is ClaimOutcome.SETTLED
+                failed = locked.execute("""
+                    SELECT space_id FROM mnemotrace.profile_refreshes WHERE status = 'failed'
+                    """).fetchall()
+                assert failed == [(f"{expired_count:06}",)]
+                job = await queue.claim()
+                assert (
+                    isinstance(job, ClaimedProfileRefresh)
+                    and job.space_id == ready_space
+                )
+                assert await queue.claim() is ClaimOutcome.EMPTY
+            assert await queue.claim() is ClaimOutcome.SETTLED
+
+    run(exercise())
+
+
+def test_profile_claim_scan_stays_bounded_as_ready_jobs_grow(
+    isolated_database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = isolated_database
+    execute = AsyncConnection.execute
+    scans: list[int] = []
+
+    async def measure_ordered_scan(
+        connection: AsyncConnection[TupleRow],
+        query: QueryNoTemplate,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> AsyncCursor[TupleRow]:
+        if (
+            isinstance(query, str)
+            and "FROM mnemotrace.profile_refreshes AS job" in query
+            and "ORDER BY" in query
+        ):
+            probe = await execute(
+                connection, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + query, params
+            )
+            row = await probe.fetchone()
+            assert row is not None
+            plan = row[0][0]["Plan"]
+            scans.append(plan["Shared Hit Blocks"] + plan["Shared Read Blocks"])
+        return await execute(connection, query, params, prepare=prepare, binary=binary)
+
+    def append_ready_jobs(start: int, end: int) -> None:
+        with psycopg.connect(database.admin) as conn:
+            conn.execute(
+                """
+                WITH inserted AS (
+                    INSERT INTO mnemotrace.spaces (space_id, owner_id, name, created_at)
+                    SELECT lpad(i::text, 6, '0'), 'owner', 'fixture', 0
+                    FROM generate_series(%s::integer, %s::integer) AS i
+                    RETURNING space_id
+                )
+                INSERT INTO mnemotrace.profile_refreshes (space_id, available_at)
+                SELECT space_id, to_timestamp(1) FROM inserted
+                """,
+                (start, end),
+            )
+            conn.execute("ANALYZE mnemotrace.profile_refreshes")
+            conn.execute("ANALYZE mnemotrace.spaces")
+
+    async def exercise() -> None:
+        async with pool(database.runtime) as connections:
+            queue = PostgresProfileRefresh(connections)
+            append_ready_jobs(1, 1_000)
+            assert isinstance(await queue.claim(), ClaimedProfileRefresh)
+            assert scans
+            small = sum(scans)
+            scans.clear()
+            append_ready_jobs(1_001, 10_000)
+            assert isinstance(await queue.claim(), ClaimedProfileRefresh)
+            assert scans and sum(scans) <= small + 4
+
+    monkeypatch.setattr(AsyncConnection, "execute", measure_ordered_scan)
+    run(exercise())
 
 
 def _group_revisions(
@@ -634,10 +859,11 @@ def test_inference_followup_preserves_its_window_through_settlement(
 
             if outcome in ("restart", "expired"):
                 queue = PostgresProfileRefresh(connections)
-                attempts = 3 if outcome == "expired" else 1
+                attempts = MAX_ATTEMPTS if outcome == "expired" else 1
                 for attempt in range(1, attempts + 1):
                     abandoned = await queue.claim()
-                    assert abandoned is not None and abandoned.space_id == scope.id
+                    assert isinstance(abandoned, ClaimedProfileRefresh)
+                    assert abandoned.space_id == scope.id
                     assert abandoned.attempt == attempt
                     if attempt < attempts:
                         _make_claimable(database, scope.id)
@@ -916,10 +1142,10 @@ def test_profile_http_reads_and_coalesces_manual_refresh(database: PgDatabase) -
             }
             async with pool(database.runtime) as connections:
                 queue = PostgresProfileRefresh(connections)
+                outcomes = await asyncio.gather(queue.claim(), queue.claim())
+                assert outcomes.count(ClaimOutcome.EMPTY) == 1
                 [claimed] = [
-                    job
-                    for job in await asyncio.gather(queue.claim(), queue.claim())
-                    if job is not None
+                    job for job in outcomes if isinstance(job, ClaimedProfileRefresh)
                 ]
                 assert claimed.space_id == scope.id
                 assert claimed.version == claimed.attempt == 1

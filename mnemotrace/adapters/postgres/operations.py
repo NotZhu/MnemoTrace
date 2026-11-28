@@ -15,7 +15,6 @@ from psycopg_pool import AsyncConnectionPool
 from ...application.operations import (
     ClaimedOperation,
     IdempotencyConflict,
-    LeaseLost,
     Operation,
     OperationNotFound,
     OperationStatus,
@@ -28,7 +27,12 @@ from ...application.remember import (
     RememberStage,
     validate_message_event_times,
 )
-from ...application.task_policy import LEASE_DURATION, MAX_ATTEMPTS
+from ...application.task_policy import (
+    LEASE_DURATION,
+    MAX_ATTEMPTS,
+    ClaimOutcome,
+    LeaseLost,
+)
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import FactChange, SessionUnavailable, SpaceSession
 from .reader import PostgresReader
@@ -235,7 +239,7 @@ class PostgresOperations:
             )
             return operation, changes
 
-    async def claim(self) -> ClaimedOperation | None:
+    async def claim(self) -> ClaimedOperation | ClaimOutcome:
         """领取可执行的会话队首任务，或结算已耗尽次数的过期任务。"""
         token = uuid4().hex
         async with self._pool.connection() as conn:
@@ -281,7 +285,7 @@ class PostgresOperations:
             )
             row = await cursor.fetchone()
         if row is None:
-            return None
+            return ClaimOutcome.EMPTY
         (
             operation_id,
             space_id,
@@ -293,7 +297,7 @@ class PostgresOperations:
             attempts,
         ) = row
         if status == "failed":
-            return None
+            return ClaimOutcome.SETTLED
         return ClaimedOperation(
             operation_id=operation_id,
             space_id=SpaceId(space_id),

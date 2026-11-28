@@ -30,7 +30,9 @@ _LOG = logging.getLogger(__name__)
 
 
 class _Runner(Protocol):
-    async def run_once(self) -> bool: ...
+    async def run_once(self) -> bool:
+        """领取或结算一项任务时返回 True。"""
+        ...
 
 
 def _is_transient(error: Exception) -> bool:

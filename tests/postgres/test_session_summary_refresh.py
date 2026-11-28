@@ -20,9 +20,12 @@ from mnemotrace.adapters.postgres.session_summary_refresh import (
     PostgresSessionSummaryRefresh,
 )
 from mnemotrace.adapters.runtime import UuidGenerator
-from mnemotrace.application.operations import LeaseLost
 from mnemotrace.application.remember import MessageInput, Remember
-from mnemotrace.application.session_summary_refresh import SessionSummaryRunner
+from mnemotrace.application.session_summary_refresh import (
+    ClaimedSessionSummary,
+    SessionSummaryRunner,
+)
+from mnemotrace.application.task_policy import MAX_ATTEMPTS, ClaimOutcome, LeaseLost
 from mnemotrace.domain.ids import SessionId
 from mnemotrace.domain.space import Space
 from mnemotrace.ports.inference import CompletionRefused
@@ -165,7 +168,7 @@ def test_append_threshold_uses_session_rows_and_includes_writes_without_facts(
             await scope.append(11)
             first = scope.state()
             assert first is not None and 55 < scope.remaining_wait() <= 60
-            assert await scope.queue.claim() is None
+            assert await scope.queue.claim() is ClaimOutcome.EMPTY
             await scope.append(*range(12, 18))
             before = scope.state()
             assert before is not None and before[3] == first[3]
@@ -337,12 +340,12 @@ def test_expired_lease_can_be_reclaimed_without_overwriting_summary(
         async with _scope(database) as scope:
             await scope.append(*range(1, 19))
             first = await scope.queue.claim()
-            assert first is not None and first.attempt == 1
-            assert await scope.queue.claim() is None
+            assert isinstance(first, ClaimedSessionSummary) and first.attempt == 1
+            assert await scope.queue.claim() is ClaimOutcome.EMPTY
             scope.make_due()
             second = await scope.queue.claim()
             assert (
-                second is not None
+                isinstance(second, ClaimedSessionSummary)
                 and second.attempt == 2
                 and second.target_seq == first.target_seq
             )
@@ -412,6 +415,35 @@ def test_retries_keep_last_good_summary_and_only_new_append_restarts_failure(
     run(exercise())
 
 
+def test_exhausted_summary_settlement_leaves_other_sessions_ready(
+    database: PgDatabase,
+) -> None:
+    async def exercise() -> None:
+        async with _scope(database) as scope:
+            await scope.append(*range(1, 19))
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                job = await scope.queue.claim()
+                assert isinstance(job, ClaimedSessionSummary) and job.attempt == attempt
+                scope.make_due()
+
+            second = SessionId("second-session")
+            async with scope.storage.session(scope.space.id, write=True) as writer:
+                await writer.register_session(second)
+            await scope.append(*range(1, 19), session=second)
+
+            assert await scope.queue.claim() is ClaimOutcome.SETTLED
+            failed = scope.state()
+            assert failed is not None and failed[0] == "failed"
+            assert failed[5:7] == (MAX_ATTEMPTS, "worker_lease_expired")
+            model = _Model()
+            assert await scope.runner(model).run_once()
+            published = scope.state(second)
+            assert published is not None and published[:2] == ("idle", "已归纳。")
+            assert len(model.prompts) == 1
+
+    run(exercise())
+
+
 def test_toggle_cancels_old_lease_even_if_enabled_again(database: PgDatabase) -> None:
     async def exercise() -> None:
         async with _scope(database) as scope:
@@ -430,7 +462,7 @@ def test_toggle_cancels_old_lease_even_if_enabled_again(database: PgDatabase) ->
                     await scope.append(27)
                     await scope.enable(True)
                     assert scope.state() == saved
-                    assert await scope.queue.claim() is None
+                    assert await scope.queue.claim() is ClaimOutcome.EMPTY
                     await scope.append(28)
                     queued = scope.state()
                     assert queued is not None and queued[0] == "queued"

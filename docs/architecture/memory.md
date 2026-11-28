@@ -103,6 +103,8 @@ HTTP 边界从 Bearer 凭据识别账号。会话、原文、事实、向量和�
 
 调度模块在同一事务内维护各组的时间边界和空间的最早到期时间。部分索引只收录开启自动刷新且存在边界的空间。Worker 按索引顺序领取到期空间，跳过持有写锁的空间，锁内推进该空间的到期边界并为实际发生的证据变化入队。关闭自动刷新时保留最早到期时间，重新启用后仍可处理错过的边界。 [PostgreSQL 部分索引](https://www.postgresql.org/docs/18/indexes-partial.html) · [PostgreSQL 行锁](https://www.postgresql.org/docs/18/sql-select.html#SQL-FOR-UPDATE-SHARE)
 
+画像队列按到期时间与空间 ID 分批读取候选。排队任务按预定执行时间排序，需接管或结算的任务按租约到期时间排序。Worker 跳过被锁定或状态已变化的候选，只有加锁并复核当前状态后才领取或结算任务。 [画像队列](../../mnemotrace/adapters/postgres/profile_refresh.py)
+
 证据查询按空间、主体、分组和有效区间查找，按条数截取命中结果后再排序。有效区间包含起点，终点时刻起失效，缺少端点时向该方向开放。读取画像时，在同一读快照中用这些规则及当前分组复核条目的全部引用。更新事实标签、追加来源或登记未来截止时保留上一版。事实被物理删除或转为敏感时，写入事务清理依赖它的已存储条目。 [PostgreSQL 范围索引](https://www.postgresql.org/docs/18/rangetypes.html#RANGETYPES-INDEXING)
 
 手动刷新重算四组，自动刷新重算待发布的组。后台在同一读快照内为每个待刷新组读取最多 128 条有效证据，另读一条探测超限。共享证据去重后合成一份模型请求，按完整请求检查上下文预算。模型结果通过校验后，后台在空间写锁下复核租约、组版本、有效期边界及擦除代际，然后用一个事务提交画像、已发布版本和任务状态。证据超限或生成失败时，读取端继续提供上一版中证据仍有效的条目。 [画像 API](../reference/http-api.md#用户画像) · [PostgreSQL 事务与隔离](https://www.postgresql.org/docs/18/transaction-iso.html)

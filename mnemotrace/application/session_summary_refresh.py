@@ -17,12 +17,14 @@ from ..ports.storage import (
     SpaceUnavailable,
     Storage,
 )
-from .operations import (
+from .session_summary import generate_session_summary, prepare_summary_batch
+from .task_policy import (
+    ATTEMPT_TIMEOUT_SECONDS,
+    ClaimOutcome,
     LeaseLost,
     classify_worker_failure,
+    retry_delay_for,
 )
-from .session_summary import generate_session_summary, prepare_summary_batch
-from .task_policy import ATTEMPT_TIMEOUT_SECONDS, retry_delay_for
 
 _LOG = logging.getLogger(__name__)
 _PAGE_SIZE = 16
@@ -44,7 +46,7 @@ class ClaimedSessionSummary:
 class SessionSummaryQueue(Protocol):
     """供摘要消费者领取任务、读取上版正文及结算发布。"""
 
-    async def claim(self) -> ClaimedSessionSummary | None: ...
+    async def claim(self) -> ClaimedSessionSummary | ClaimOutcome: ...
 
     async def read_previous(
         self, job: ClaimedSessionSummary, reader: SpaceReader
@@ -85,10 +87,10 @@ class SessionSummaryRunner:
         self._transient = transient
 
     async def run_once(self) -> bool:
-        """处理一项可领取任务，返回是否领到任务。"""
+        """返回本轮是否领取或结算了一项任务。"""
         job = await self._queue.claim()
-        if job is None:
-            return False
+        if isinstance(job, ClaimOutcome):
+            return job is ClaimOutcome.SETTLED
         try:
             async with timeout(ATTEMPT_TIMEOUT_SECONDS):
                 await self._refresh(job)

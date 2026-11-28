@@ -187,3 +187,5 @@ instance_compose up -d worker
 ```
 
 每次领取后，单次执行限时 180 秒，租约有效期为 210 秒。worker 突然退出时，`running` 可持续到当前租约到期。可用的 worker 随后会领取仍有尝试次数的任务并继续处理同一 `operation_id`。旧 worker 恢复后，其过期租约无法提交结果。用原任务 ID 检查 `status` 和 `attempts`。 [客户端幂等重试与恢复](../docs/reference/http-api.md#幂等重试与恢复)
+
+更新 worker 时，先停止旧 worker，再启动新版本并确认健康检查通过。通过画像读取接口检查积压任务的刷新状态。耗尽尝试次数的画像任务在租约到期后结算，有后续刷新时按原定时间重新排队，否则报告 `worker_lease_expired`。 [画像刷新状态](../docs/reference/http-api.md#用户画像)
