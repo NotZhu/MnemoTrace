@@ -1,5 +1,6 @@
 """读取 HTTP 服务与写入 worker 共用的运行配置。"""
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, tzinfo
@@ -14,7 +15,7 @@ _POOL_TIMEOUT_ENV = "MNEMOTRACE_DB_POOL_TIMEOUT_SECONDS"
 
 
 def read_postgres_dsn(env: Mapping[str, str]) -> str:
-    """读取当前进程的 PostgreSQL 连接串并校验格式。"""
+    """读取并校验当前进程的 PostgreSQL 连接串。"""
     dsn = env.get(_POSTGRES_DSN, "").strip()
     _validate_postgres_dsn(dsn)
     return dsn
@@ -26,9 +27,24 @@ def _validate_postgres_dsn(dsn: str) -> None:
     try:
         if "\x00" in dsn:
             raise ValueError
-        conninfo_to_dict(dsn)
+        params = conninfo_to_dict(dsn)
     except (ProgrammingError, ValueError):
         raise ValueError(f"{_POSTGRES_DSN} 格式无效") from None
+
+    timeout = params.get("connect_timeout")
+    if timeout is None:
+        return
+    value = str(timeout).strip(" \t\n\r\v\f")
+    try:
+        if (
+            not re.fullmatch(r"[+-]?[0-9]+", value)
+            or not -(2**31) <= int(value) < 2**31
+        ):
+            raise ValueError
+    except ValueError:
+        raise ValueError(
+            f"{_POSTGRES_DSN} 的 connect_timeout 须为 32 位有符号整数秒数"
+        ) from None
 
 
 @dataclass(frozen=True)

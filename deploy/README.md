@@ -17,7 +17,7 @@
 
 首次部署使用空数据库卷。数据库容器初始化 `vector`（pgvector）和 `btree_gist` 扩展，创建非超级用户 `mnemotrace_app`，将 `mnemotrace` schema 交给该账号，并清除 PostgreSQL 初始化管理员的临时口令。应用账号通过 SCRAM 登录，拥有自己 schema 中的表、迁移账本和 API 密钥表，可修改结构及记录。数据库管理员通过容器内 Unix socket 使用 peer 认证。 [初始化脚本](init-postgres.sql) · [PostgreSQL 容器初始化说明](https://hub.docker.com/_/postgres)
 
-API 和 worker 通过 `MNEMOTRACE_DB_POOL_TIMEOUT_SECONDS` 设置等待池连接的时限，接受正整数秒，默认 3 秒。新建数据库连接时使用 DSN 的 `connect_timeout`，省略时使用 3 秒。
+API 和 worker 通过 `MNEMOTRACE_DB_POOL_TIMEOUT_SECONDS` 设置等待池连接的时限，接受正整数秒，默认 3 秒。新建数据库连接时使用 DSN 的 `connect_timeout`，填写十进制整数秒，例如 `connect_timeout=5`。省略时使用 3 秒。
 
 `MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS` 默认 1 秒，`MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS` 默认 15 秒，`MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS` 默认 60 秒。维护时限应用于会话擦除、空间清空和空间删除的单条语句。配置须满足等锁时限小于普通语句时限，且普通语句时限小于等于维护语句时限。
 
