@@ -63,6 +63,49 @@ def test_runtime_pool_bounds_lock_and_statement_waits(database: PgDatabase) -> N
     run(exercise())
 
 
+def test_save_facts_recovers_from_foreign_key_error(database: PgDatabase) -> None:
+    """批次回滚后，同一空间写事务仍可保存其他事实。"""
+
+    async def exercise() -> None:
+        scope = space()
+        subject = Entity(scope.id, "星河项目")
+        source = message(scope, "source")
+        valid_in_batch = fact(subject, "first", provenance=(source.id,))
+        missing_source = fact(subject, "second", provenance=(MessageId("missing"),))
+        valid_after_failure = fact(subject, "third", provenance=(source.id,))
+        failed_ids = (valid_in_batch.id, missing_source.id)
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.register_session(SESSION)
+                await writer.append_messages((source,))
+                await writer.upsert_entity(subject)
+                revision = await writer.get_fact_revision()
+                with pytest.raises(ValueError, match="来源"):
+                    await writer.save_facts(
+                        (valid_in_batch, missing_source), changed_at=10.0
+                    )
+                assert await writer.get_fact_support_groups(failed_ids) == {}
+                assert await writer.get_fact_revision() == revision
+                (saved,) = await writer.save_facts(
+                    (valid_after_failure,), changed_at=11.0
+                )
+
+            async with storage.session(scope.id) as reader:
+                assert await reader.get_facts(failed_ids) == {}
+                for fact_id in failed_ids:
+                    assert await reader.list_fact_changes(fact_id) == ()
+                assert (
+                    await reader.get_fact(valid_after_failure.id) == valid_after_failure
+                )
+                assert await reader.list_fact_changes(valid_after_failure.id) == (
+                    saved,
+                )
+
+    run(exercise())
+
+
 def test_space_scope_message_replay_and_entity_identity(database: PgDatabase) -> None:
     """账号检查和所有关联查询使用同一个空间作用域。"""
 

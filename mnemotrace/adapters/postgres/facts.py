@@ -77,7 +77,7 @@ async def write_fact_batch(
     """写入已校验的事实变化及其来源和历史记录。
 
     Args:
-        conn: 已取得空间写入权的事务连接。
+        conn: 已取得空间写入权且由调用方管理批次保存点的事务连接。
         changes: 变更前后快照及来源和触发信息。
         changed_at: 保存到变化记录的 UTC epoch 秒。
 
@@ -85,7 +85,7 @@ async def write_fact_batch(
         按变更游标升序排列的已写入记录。
 
     Raises:
-        ValueError: 事实引用违反外键约束，整个批次回滚。
+        ValueError: 事实引用违反外键约束，调用方回滚整个批次。
     """
     if not changes:
         return ()
@@ -103,7 +103,7 @@ async def write_fact_batch(
         and change.append_at is None
     ]
     try:
-        async with conn.transaction(), conn.cursor() as cursor:
+        async with conn.cursor() as cursor:
             if created:
                 await cursor.executemany(
                     _INSERT_FACT,
