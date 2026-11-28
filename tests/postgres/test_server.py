@@ -761,6 +761,14 @@ def test_readiness_requires_explicit_migration(
                 )
             assert migrate.apply_migrations(dsn) == pending
             assert (await client.get("/readyz")).status_code == 200
+            with psycopg.connect(dsn) as conn:
+                conn.execute(
+                    "UPDATE mnemotrace.schema_migrations SET checksum = %s WHERE version = %s",
+                    ("synthetic-mismatch", pending[0]),
+                )
+            response = await client.get("/readyz")
+            assert response.status_code == 503
+            assert response.json()["code"] == "database_not_ready"
 
     with database_factory() as dsn:
         run(exercise(dsn))

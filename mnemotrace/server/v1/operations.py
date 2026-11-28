@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...adapters.postgres.operations import PostgresOperations
 from ...application.operations import (
     IdempotencyConflict,
     Operation,
@@ -24,7 +23,8 @@ from ...application.remember import (
 from ...domain.enums import Role
 from ...domain.ids import SessionId, SpaceId
 from ...ports.storage import SessionUnavailable
-from ..auth import OwnerDependency, PoolDependency
+from ..auth import OwnerDependency
+from ..dependencies import OperationsDependency
 from ..errors import problem_responses
 from .audit_schemas import (
     ChangeListScope,
@@ -47,7 +47,7 @@ from .schemas import (
 router = APIRouter(
     prefix="/spaces/{space_id}",
     tags=["operations"],
-    responses=problem_responses(401, 404, 422, 500, 503),
+    responses=problem_responses(401, 404, 422, 503),
 )
 
 
@@ -169,7 +169,7 @@ class OperationPage(BaseModel):
     status_code=202,
     response_model_exclude_none=True,
     dependencies=[Depends(require_json)],
-    responses={202: CREATED_LOCATION, **problem_responses(400, 409, 413, 415)},
+    responses={202: CREATED_LOCATION, **problem_responses(409, 415)},
 )
 async def remember(
     space_id: ResourceId,
@@ -177,13 +177,13 @@ async def remember(
     body: RememberRequest,
     request: Request,
     response: Response,
-    pool: PoolDependency,
+    operations: OperationsDependency,
     owner_id: OwnerDependency,
     key: IdempotencyKey,
 ) -> OperationResponse:
     """持久接收消息并返回可轮询的任务。"""
     try:
-        item = await PostgresOperations(pool).submit(
+        item = await operations.submit(
             owner_id=owner_id,
             space_id=SpaceId(space_id),
             session_id=SessionId(session_id),
@@ -212,8 +212,10 @@ async def remember(
     except WriteModelsUnavailable as exc:
         raise HTTPException(503, detail="write_models_unavailable") from exc
     accepted = OperationResponse.from_operation(item)
-    response.headers["Location"] = (
-        f"/v1/spaces/{space_id}/operations/{accepted.operation_id}"
+    response.headers["Location"] = str(
+        request.app.url_path_for(
+            "get_operation", space_id=space_id, operation_id=accepted.operation_id
+        )
     )
     return accepted
 
@@ -222,14 +224,14 @@ async def remember(
 async def list_operations(
     space_id: ResourceId,
     query: Annotated[OperationListQuery, Query()],
-    pool: PoolDependency,
+    operations: OperationsDependency,
     owner_id: OwnerDependency,
 ) -> OperationPage:
     """按接收顺序倒序列出当前空间的任务。"""
     scope = OperationListScope(
         space_id=space_id, status=query.status, session_id=query.session_id
     )
-    items = await PostgresOperations(pool).list(
+    items = await operations.list(
         owner_id,
         SpaceId(space_id),
         status=query.status,
@@ -261,14 +263,12 @@ async def list_operations(
 async def get_operation(
     space_id: ResourceId,
     operation_id: ResourceId,
-    pool: PoolDependency,
+    operations: OperationsDependency,
     owner_id: OwnerDependency,
 ) -> OperationResponse:
     """查询当前空间内的写入任务状态。"""
     try:
-        item = await PostgresOperations(pool).get(
-            owner_id, SpaceId(space_id), operation_id
-        )
+        item = await operations.get(owner_id, SpaceId(space_id), operation_id)
     except OperationNotFound as exc:
         raise HTTPException(404, detail="operation_not_found") from exc
     return OperationResponse.from_operation(item)
@@ -281,7 +281,7 @@ async def list_operation_fact_changes(
     space_id: ResourceId,
     operation_id: ResourceId,
     query: Annotated[FactChangesQuery, Query()],
-    pool: PoolDependency,
+    operations: OperationsDependency,
     owner_id: OwnerDependency,
 ) -> OperationFactChangePage:
     """读取任务状态和在同一发布事务中产生的可见事实变更。"""
@@ -292,7 +292,7 @@ async def list_operation_fact_changes(
         include_sensitive=query.include_sensitive,
     )
     try:
-        operation, changes = await PostgresOperations(pool).list_fact_changes(
+        operation, changes = await operations.list_fact_changes(
             owner_id,
             SpaceId(space_id),
             operation_id,

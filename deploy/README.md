@@ -60,7 +60,7 @@ curl -fsS http://127.0.0.1:8100/readyz
 ```
 
 - `migrate` 成功退出后，`db`、`api` 和 `worker` 应处于健康状态。
-- `/livez` 确认 HTTP 进程可响应，`/readyz` 核对数据库连接和迁移账本。
+- `/livez` 确认 HTTP 进程可响应。`/readyz` 在 3 秒总预算内取得池连接并核对迁移账本。数据库连接池等待时限可单独配置，调大后就绪检查仍使用 3 秒总预算。Compose 的 HTTP 探针等待 4 秒，给服务留出返回错误响应的时间。
 - 按快速开始运行 HTTP 验收脚本，检查模型调用、写入、召回和原文追溯。修改端口后，用 `--base-url` 指定实际地址。非本机地址使用 HTTPS。 [快速开始](../README.zh-CN.md#快速开始) · [验收脚本](../scripts/http_smoke.py)
 
 ## API 密钥管理

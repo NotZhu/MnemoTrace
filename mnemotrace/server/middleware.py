@@ -1,17 +1,16 @@
-"""限制 HTTP 请求大小并为响应添加服务端生成的请求标识。"""
-
-from uuid import uuid4
+"""管理 HTTP 请求标识、正文大小上限和意外错误响应。"""
 
 from fastapi import HTTPException, Request
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..diagnostics import correlate
-from .errors import problem
+from .errors import log_unexpected_error, problem
+from .response_headers import apply_response_headers, request_id
 
 
 class RequestBoundary:
-    """对声明长度和 ASGI 实际读取的正文应用同一字节上限。"""
+    """限制声明和实际读取的正文字节数，统一处理意外 HTTP 错误。"""
 
     def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
         self._app = app
@@ -21,16 +20,14 @@ class RequestBoundary:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        request_id = uuid4().hex
-        scope.setdefault("state", {})["request_id"] = request_id
+        identifier = request_id(scope)
+        response_started = False
 
         async def send_response(message: Message) -> None:
+            nonlocal response_started
             if message["type"] == "http.response.start":
-                headers = MutableHeaders(scope=message)
-                headers["X-Request-ID"] = request_id
-                headers["X-Content-Type-Options"] = "nosniff"
-                if scope["path"].startswith("/v1/"):
-                    headers["Cache-Control"] = "no-store"
+                apply_response_headers(scope, MutableHeaders(scope=message))
+                response_started = True
             await send(message)
 
         length = Headers(scope=scope).get("content-length")
@@ -61,5 +58,17 @@ class RequestBoundary:
                     raise HTTPException(413, detail="request_too_large")
             return message
 
-        with correlate(request_id):
-            await self._app(scope, receive_limited, send_response)
+        with correlate(identifier):
+            try:
+                await self._app(scope, receive_limited, send_response)
+            except Exception as exc:  # noqa: BLE001 - HTTP 边界统一脱敏意外异常。
+                log_unexpected_error(identifier, exc)
+            else:
+                return
+
+            if response_started:
+                # 退出原异常处理后再通知 ASGI 服务器中断传输。
+                raise RuntimeError("HTTP response interrupted")
+            await problem(Request(scope), 500, "internal_error")(
+                scope, receive, send_response
+            )

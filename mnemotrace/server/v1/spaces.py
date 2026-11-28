@@ -1,14 +1,14 @@
 """管理账号名下的空间。"""
 
-from time import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from ...adapters.runtime import UuidGenerator
 from ...domain.ids import SpaceId
 from ...domain.space import Space
 from ..auth import AuthorizedStorage, OwnerDependency
+from ..dependencies import ClockDependency
 from ..errors import problem_responses
 from .page_cursor import SpacePageCursor
 from .schemas import (
@@ -25,10 +25,10 @@ from .schemas import (
 )
 
 router = APIRouter(
-    prefix="/spaces", tags=["spaces"], responses=problem_responses(401, 422, 500, 503)
+    prefix="/spaces", tags=["spaces"], responses=problem_responses(401, 422, 503)
 )
 _ids = UuidGenerator()
-_json_errors = problem_responses(400, 413, 415)
+_json_errors = problem_responses(415)
 
 
 @router.post(
@@ -40,15 +40,19 @@ _json_errors = problem_responses(400, 413, 415)
 )
 async def create_space(
     body: SpaceName,
+    request: Request,
     response: Response,
     storage: AuthorizedStorage,
     owner_id: OwnerDependency,
+    clock: ClockDependency,
 ) -> SpaceResponse:
     """在认证账号下创建空间。"""
-    space = Space(_ids.new_space_id(), owner_id, body.name, time())
+    space = Space(_ids.new_space_id(), owner_id, body.name, clock.now())
     await storage.create_space(space)
     created = SpaceResponse.from_space(space)
-    response.headers["Location"] = f"/v1/spaces/{created.space_id}"
+    response.headers["Location"] = str(
+        request.app.url_path_for("get_space", space_id=created.space_id)
+    )
     return created
 
 
@@ -107,7 +111,7 @@ async def update_space(
     status_code=204,
     response_class=Response,
     dependencies=[Depends(require_empty_body)],
-    responses=problem_responses(400, 404, 413),
+    responses=problem_responses(404),
 )
 async def purge_space(
     space_id: ResourceId, key: IdempotencyKey, storage: AuthorizedStorage
@@ -123,7 +127,7 @@ async def purge_space(
     status_code=204,
     response_class=Response,
     dependencies=[Depends(require_empty_body)],
-    responses=problem_responses(400, 404, 413),
+    responses=problem_responses(404),
 )
 async def delete_space(space_id: ResourceId, storage: AuthorizedStorage) -> Response:
     """同步删除绑定账号下的空间及其全部内容。"""

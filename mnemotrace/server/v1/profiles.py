@@ -1,26 +1,28 @@
 """读取空间的可用画像并手动请求刷新。"""
 
 from datetime import UTC, datetime
-from time import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from ...adapters.postgres.profile_refresh import PostgresProfileRefresh
 from ...application.operations import WriteModelsUnavailable
-from ...application.profile import read_visible_profile
 from ...application.profile_refresh import PendingRefreshStatus, RefreshStatus
 from ...domain.ids import SpaceId
 from ...domain.time import utc_datetime
-from ..auth import AuthorizedStorage, OwnerDependency, PoolDependency
+from ..auth import OwnerDependency
+from ..dependencies import (
+    ClockDependency,
+    ProfileReaderDependency,
+    ProfileRefreshDependency,
+)
 from ..errors import problem_responses
 from .schemas import ResourceId, require_empty_body
 
 router = APIRouter(
     prefix="/spaces/{space_id}/profile",
     tags=["profiles"],
-    responses=problem_responses(401, 404, 422, 500, 503),
+    responses=problem_responses(401, 404, 422, 503),
 )
 
 
@@ -64,12 +66,13 @@ class ProfileRefreshAccepted(BaseModel):
 
 @router.get("", operation_id="getProfile")
 async def get_profile(
-    space_id: ResourceId, storage: AuthorizedStorage
+    space_id: ResourceId,
+    owner_id: OwnerDependency,
+    read_profile: ProfileReaderDependency,
+    clock: ClockDependency,
 ) -> ProfileResponse:
     """读取仍有有效证据的画像条目和可轮询的刷新状态。"""
-    async with storage.session(SpaceId(space_id)) as reader:
-        profile = await read_visible_profile(reader, reference_time=time())
-        refresh = await PostgresProfileRefresh.get(reader)
+    profile, refresh = await read_profile(owner_id, SpaceId(space_id), clock=clock)
     data = (
         ProfileData(
             **{
@@ -113,22 +116,23 @@ async def get_profile(
                 }
             }
         },
-        **problem_responses(400, 413),
     },
 )
 async def refresh_profile(
     space_id: ResourceId,
     request: Request,
     response: Response,
-    pool: PoolDependency,
     owner_id: OwnerDependency,
+    submit_refresh: ProfileRefreshDependency,
 ) -> ProfileRefreshAccepted:
     """请求手动刷新，已有在途刷新时复用它。"""
     try:
-        status = await PostgresProfileRefresh(pool).submit(
+        status = await submit_refresh(
             owner_id, SpaceId(space_id), configured=request.app.state.write_configured
         )
     except WriteModelsUnavailable as exc:
         raise HTTPException(503, detail="write_models_unavailable") from exc
-    response.headers["Location"] = f"/v1/spaces/{space_id}/profile"
+    response.headers["Location"] = str(
+        request.app.url_path_for("get_profile", space_id=space_id)
+    )
     return ProfileRefreshAccepted(refresh_status=status)

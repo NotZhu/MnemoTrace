@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException
 
 from ..ports.inference import InferenceError
 from ..ports.storage import CommitOutcomeUnknown, SpaceUnavailable
+from .response_headers import request_id
 
 _logger = logging.getLogger(__name__)
 _DETAILS = {
@@ -104,7 +105,7 @@ def problem(
         status=status,
         detail=_DETAILS.get(code, title),
         code=code,
-        request_id=request.state.request_id,
+        request_id=request_id(request.scope),
     )
     content = body.model_dump()
     if errors is not None:
@@ -132,6 +133,13 @@ def problem_responses(*statuses: int) -> dict[int | str, dict[str, object]]:
             "content": {"application/problem+json": {"schema": schema}},
         }
     return responses
+
+
+def log_unexpected_error(identifier: str, exc: Exception) -> None:
+    """记录意外 HTTP 异常的请求标识和类别。"""
+    _logger.error(
+        "请求处理失败 request_id=%s reason=%s", identifier, type(exc).__name__
+    )
 
 
 def install_error_handlers(app: FastAPI) -> None:

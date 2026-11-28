@@ -8,6 +8,7 @@ from ..runtime_settings import RuntimeSettings
 
 _DEFAULT_MAX_BODY_BYTES = 64 * 1024
 _DEFAULT_QUEUE_LIMIT = 100
+READINESS_TIMEOUT_SECONDS = 3
 
 
 def _int_setting(env: Mapping[str, str], name: str, default: int) -> int:

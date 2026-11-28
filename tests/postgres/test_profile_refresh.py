@@ -19,6 +19,7 @@ from psycopg.rows import TupleRow
 from mnemotrace import worker
 from mnemotrace.adapters.inference import InferenceClients
 from mnemotrace.adapters.postgres import PostgresStorage
+from mnemotrace.adapters.postgres import profile_refresh as pg_profile_refresh
 from mnemotrace.adapters.postgres import storage as pg_storage
 from mnemotrace.adapters.postgres.identity import issue_key
 from mnemotrace.adapters.postgres.operations import PostgresOperations
@@ -34,7 +35,7 @@ from mnemotrace.adapters.postgres.session import PostgresSession
 from mnemotrace.adapters.runtime import SystemClock, UuidGenerator
 from mnemotrace.application import profile_refresh
 from mnemotrace.application.operations import OperationRunner
-from mnemotrace.application.profile import MAX_PROFILE_FACTS
+from mnemotrace.application.profile import MAX_PROFILE_FACTS, read_visible_profile
 from mnemotrace.application.profile_evidence import is_profile_evidence
 from mnemotrace.application.profile_refresh import (
     ClaimedProfileRefresh,
@@ -57,7 +58,6 @@ from mnemotrace.ports.storage import CommitOutcomeUnknown, SpaceReader
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.app import create_app
 from mnemotrace.server.settings import Settings
-from mnemotrace.server.v1 import profiles
 
 from ..ports.fakes import FakeClock, FakeEmbedder, FakeLLM
 from .conftest import PgDatabase
@@ -81,7 +81,6 @@ def profile_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
         return clock.now()
 
     monkeypatch.setattr(PostgresSession, "_profile_reference_time", reference_time)
-    monkeypatch.setattr(profiles, "time", clock.now)
     return clock
 
 
@@ -130,7 +129,7 @@ class _HttpSpace:
 
 @asynccontextmanager
 async def _http_space(
-    database: PgDatabase, *, configured: bool = True
+    database: PgDatabase, *, configured: bool = True, clock: Clock | None = None
 ) -> AsyncIterator[_HttpSpace]:
     owner = uuid4().hex
     with psycopg.connect(database.key_admin) as conn:
@@ -152,7 +151,8 @@ async def _http_space(
                 "MNEMOTRACE_POSTGRES_DSN": database.runtime,
                 **(models if configured else {}),
             }
-        )
+        ),
+        clock=clock,
     )
     headers = {"Authorization": f"Bearer {key.token}"}
     async with (
@@ -1532,14 +1532,13 @@ def test_profile_retains_entries_after_evidence_metadata_update(
 
 
 def test_scheduled_expiry_preserves_the_last_profile_until_the_fact_expires(
-    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+    database: PgDatabase,
 ) -> None:
     clock = FakeClock(at=_database_now(database).timestamp())
-    monkeypatch.setattr(profiles, "time", clock.now)
 
     async def exercise() -> None:
         async with (
-            _http_space(database) as scope,
+            _http_space(database, clock=clock) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
@@ -1997,7 +1996,7 @@ def test_automatic_group_refresh_wakes_on_activation_and_expiry(
 
     async def exercise() -> None:
         async with (
-            _http_space(database) as scope,
+            _http_space(database, clock=clock) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
@@ -2172,12 +2171,11 @@ def test_due_refresh_skips_a_space_with_a_busy_writer(database: PgDatabase) -> N
 def test_profile_get_checks_expiry_after_opening_read_session(
     database: PgDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    now = 100.0
-    monkeypatch.setattr(profiles, "time", lambda: now)
+    clock = FakeClock(at=100.0)
 
     async def exercise() -> None:
         async with (
-            _http_space(database) as scope,
+            _http_space(database, clock=clock) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)
@@ -2187,7 +2185,7 @@ def test_profile_get_checks_expiry_after_opening_read_session(
                     Profile(
                         scope.id,
                         {"basic": (ProfileEntry("画像", (evidence.id,)),)},
-                        now,
+                        clock.now(),
                     )
                 )
             assert (await scope.view())["profile"] is not None
@@ -2198,15 +2196,47 @@ def test_profile_get_checks_expiry_after_opening_read_session(
             async def open_after_expiry(
                 storage: PostgresStorage, space_id: SpaceId, write: bool
             ) -> AsyncIterator[SpaceReader]:
-                nonlocal now
                 assert not write
-                now = 101.0
+                clock.at = 101.0
                 async with open_session(storage, space_id, write) as reader:
                     yield reader
 
             with monkeypatch.context() as patch:
                 patch.setattr(PostgresStorage, "_session", open_after_expiry)
                 assert (await scope.view())["profile"] is None
+
+    run(exercise())
+
+
+def test_profile_get_reads_refresh_status_from_same_snapshot(
+    database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def exercise() -> None:
+        async with (
+            _http_space(database) as scope,
+            pool(database.runtime) as connections,
+        ):
+            refresh = PostgresProfileRefresh(connections)
+
+            async def submit_after_profile_read(
+                reader: SpaceReader, *, reference_time: float
+            ) -> Profile | None:
+                profile = await read_visible_profile(
+                    reader, reference_time=reference_time
+                )
+                assert await refresh.submit(scope.owner, scope.id, configured=True) == (
+                    "queued"
+                )
+                return profile
+
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    pg_profile_refresh,
+                    "read_visible_profile",
+                    submit_after_profile_read,
+                )
+                assert (await scope.view())["refresh_status"] == "idle"
+            assert (await scope.view())["refresh_status"] == "queued"
 
     run(exercise())
 
@@ -2232,7 +2262,7 @@ def test_fact_write_preserves_unprocessed_profile_expiry(
 
     async def exercise() -> None:
         async with (
-            _http_space(database) as scope,
+            _http_space(database, clock=clock) as scope,
             pool(database.runtime) as connections,
         ):
             storage = PostgresStorage(connections, owner_id=scope.owner)

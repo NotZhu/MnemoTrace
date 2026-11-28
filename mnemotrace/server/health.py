@@ -1,14 +1,21 @@
 """提供进程存活和数据库就绪探针。"""
 
-from asyncio import timeout
+from collections.abc import Awaitable, Callable
+from typing import Annotated, cast
 
-import psycopg
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .auth import PoolDependency
+from ..adapters.postgres.migrate import MigrationReadiness
 from .errors import problem_responses
 
 router = APIRouter(tags=["health"])
+
+type ReadinessCheck = Callable[[], Awaitable[MigrationReadiness]]
+
+
+async def readiness_check(request: Request) -> ReadinessCheck:
+    """取得应用装配的数据库就绪检查。"""
+    return cast(ReadinessCheck, request.app.state.check_readiness)
 
 
 @router.get("/livez")
@@ -18,18 +25,13 @@ async def live() -> dict[str, str]:
 
 
 @router.get("/readyz", responses=problem_responses(503))
-async def ready(request: Request, pool: PoolDependency) -> dict[str, str]:
+async def ready(
+    check: Annotated[ReadinessCheck, Depends(readiness_check)],
+) -> dict[str, str]:
     """确认数据库可访问且迁移账本匹配运行包。"""
-    try:
-        async with timeout(3), pool.connection() as conn:
-            cursor = await conn.execute(
-                "SELECT version, checksum FROM mnemotrace.schema_migrations"
-            )
-            applied: dict[str, str] = dict(await cursor.fetchall())
-    except (psycopg.errors.UndefinedTable, psycopg.errors.InvalidSchemaName) as exc:
-        raise HTTPException(503, detail="database_not_ready") from exc
-    except (psycopg.Error, TimeoutError) as exc:
-        raise HTTPException(503, detail="database_unavailable") from exc
-    if applied != request.app.state.migration_checksums:
+    result = await check()
+    if result == "not_ready":
         raise HTTPException(503, detail="database_not_ready")
+    if result == "unavailable":
+        raise HTTPException(503, detail="database_unavailable")
     return {"status": "ready"}

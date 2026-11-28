@@ -3,17 +3,24 @@
 import argparse
 import os
 import sys
+from asyncio import timeout
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
+from typing import Literal
 
 import psycopg
 from psycopg.rows import TupleRow
 
 from ...runtime_settings import read_postgres_dsn
+from .pool import ConnectionPool
 
 _LOCK_KEY = 698771117284033230  # 此数据库内为 MnemoTrace 迁移保留的锁键。
 _LEDGER = "mnemotrace.schema_migrations"
+_READ_LEDGER = f"SELECT version, checksum FROM {_LEDGER}"
+
+type MigrationReadiness = Literal["ready", "not_ready", "unavailable"]
 
 
 class MigrationError(RuntimeError):
@@ -45,14 +52,30 @@ def _applied(conn: psycopg.Connection[TupleRow]) -> dict[str, str]:
     assert exists is not None
     if not exists[0]:
         return {}
-    return dict(
-        conn.execute("SELECT version, checksum FROM mnemotrace.schema_migrations")
-    )
+    return dict(conn.execute(_READ_LEDGER))
 
 
 def migration_checksums() -> dict[str, str]:
     """返回当前包所需的迁移及校验和，供服务就绪检查使用。"""
     return {migration.version: migration.checksum for migration in _migrations()}
+
+
+async def check_migration_readiness(
+    pool: ConnectionPool,
+    expected: Mapping[str, str],
+    *,
+    timeout_seconds: int,
+) -> MigrationReadiness:
+    """在同一预算内取得运行连接并核对迁移账本。"""
+    try:
+        async with timeout(timeout_seconds), pool.connection() as conn:
+            cursor = await conn.execute(_READ_LEDGER)
+            applied: dict[str, str] = dict(await cursor.fetchall())
+    except (psycopg.errors.UndefinedTable, psycopg.errors.InvalidSchemaName):
+        return "not_ready"
+    except (psycopg.Error, TimeoutError):
+        return "unavailable"
+    return "ready" if applied == expected else "not_ready"
 
 
 def _check_history(migrations: tuple[_Migration, ...], applied: dict[str, str]) -> None:

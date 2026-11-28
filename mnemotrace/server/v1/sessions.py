@@ -26,7 +26,7 @@ from .schemas import (
 router = APIRouter(
     prefix="/spaces/{space_id}/sessions",
     tags=["sessions"],
-    responses=problem_responses(401, 404, 422, 500, 503),
+    responses=problem_responses(401, 404, 422, 503),
 )
 _ids = UuidGenerator()
 
@@ -47,7 +47,7 @@ MessagePageCursor = SequencePageCursor[MessageListScope]
     "",
     operation_id="createSession",
     status_code=201,
-    responses={201: CREATED_LOCATION, **problem_responses(413)},
+    responses={201: CREATED_LOCATION},
 )
 async def create_session(
     space_id: ResourceId,
@@ -61,8 +61,10 @@ async def create_session(
         pass
     session = await create_session_registration(storage, SpaceId(space_id), _ids)
     created = SessionResponse.from_registration(session)
-    response.headers["Location"] = (
-        f"/v1/spaces/{space_id}/sessions/{created.session_id}"
+    response.headers["Location"] = str(
+        request.app.url_path_for(
+            "get_session", space_id=space_id, session_id=created.session_id
+        )
     )
     return created
 
@@ -115,7 +117,6 @@ async def get_session(
     status_code=204,
     response_class=Response,
     dependencies=[Depends(require_empty_body)],
-    responses=problem_responses(400, 413),
 )
 async def delete_session(
     space_id: ResourceId, session_id: ResourceId, storage: AuthorizedStorage

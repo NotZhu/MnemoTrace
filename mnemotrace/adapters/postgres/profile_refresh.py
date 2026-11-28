@@ -13,7 +13,11 @@ from psycopg.rows import TupleRow
 from psycopg_pool import AsyncConnectionPool
 
 from ...application.operations import WriteModelsUnavailable
-from ...application.profile import MAX_PROFILE_FACTS, ProfileEvidence
+from ...application.profile import (
+    MAX_PROFILE_FACTS,
+    ProfileEvidence,
+    read_visible_profile,
+)
 from ...application.profile_refresh import (
     ClaimedProfileRefresh,
     PendingRefreshStatus,
@@ -31,6 +35,7 @@ from ...domain.entity import Entity
 from ...domain.enums import ProfileGroup
 from ...domain.ids import FactId, SpaceId
 from ...domain.profile import Profile, ProfileEntry
+from ...ports.runtime import Clock
 from ...ports.storage import SpaceReader, SpaceSession, SpaceUnavailable
 from .profile_schedule import (
     GROUP_TABLE,
@@ -139,20 +144,24 @@ class PostgresProfileRefresh:
             )
             return "queued"
 
-    @staticmethod
-    async def get(reader: SpaceReader) -> ProfileRefreshState:
-        """在同一授权快照内读取空间刷新状态。"""
-        conn = cast(PostgresReader, reader)._conn
-        cursor = await conn.execute(
-            f"SELECT status, CASE WHEN attempts > 0 THEN available_at END, error_code FROM {TABLE} WHERE space_id = %s",
-            (reader.space_id.value,),
-        )
-        row = await cursor.fetchone()
-        return (
+    async def read(
+        self, owner_id: str, space_id: SpaceId, *, clock: Clock
+    ) -> tuple[Profile | None, ProfileRefreshState]:
+        """在同一授权快照内读取仍有有效证据的画像和刷新状态。"""
+        async with self._storage(owner_id).session(space_id) as reader:
+            profile = await read_visible_profile(reader, reference_time=clock.now())
+            conn = cast(PostgresReader, reader)._conn
+            cursor = await conn.execute(
+                f"SELECT status, CASE WHEN attempts > 0 THEN available_at END, error_code FROM {TABLE} WHERE space_id = %s",
+                (space_id.value,),
+            )
+            row = await cursor.fetchone()
+        refresh = (
             ProfileRefreshState(*row)
             if row is not None
             else ProfileRefreshState("idle")
         )
+        return profile, refresh
 
     async def wake_due(self, reference_time: float) -> None:
         """持有选中空间的写锁，将到期证据边界转换为持久刷新请求。"""

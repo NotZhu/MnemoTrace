@@ -1,27 +1,50 @@
 """验证 HTTP 骨架对外公开的契约。"""
 
+import asyncio
+import socket
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime, timedelta
+from functools import partial
+from unittest.mock import AsyncMock, MagicMock
 
+import psycopg
 import pytest
-from httpx import ASGITransport, AsyncClient, Response
+from fastapi.responses import StreamingResponse
+from httpx import ASGITransport, AsyncClient, RemoteProtocolError, Response
+from uvicorn import Config, Server
 
+from mnemotrace.adapters.postgres.migrate import check_migration_readiness
+from mnemotrace.application.operations import (
+    IdempotencyConflict,
+    Operation,
+    OperationNotFound,
+    QueueFull,
+    WriteModelsUnavailable,
+)
+from mnemotrace.application.profile_refresh import ProfileRefreshState
 from mnemotrace.domain.entity import Entity
 from mnemotrace.domain.enums import Role, Source
 from mnemotrace.domain.fact import Fact
 from mnemotrace.domain.ids import FactId, MessageId, SessionId, SpaceId
 from mnemotrace.domain.message import Message
+from mnemotrace.domain.profile import Profile, ProfileEntry
 from mnemotrace.domain.space import Space
 from mnemotrace.domain.values import EntityRef, LiteralValue, Predicate
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.__main__ import main as server_main
 from mnemotrace.server.app import create_app
 from mnemotrace.server.auth import authenticated_owner, authorized_storage
+from mnemotrace.server.dependencies import (
+    OperationAccess,
+    operation_access,
+    profile_reader,
+    profile_refresh_submitter,
+)
+from mnemotrace.server.health import readiness_check
 from mnemotrace.server.settings import Settings
-from tests.ports.fakes import FakeEmbedder, FakeStorage
+from tests.ports.fakes import FakeClock, FakeEmbedder, FakeStorage
 
 
 @pytest.fixture
@@ -129,6 +152,32 @@ async def test_health_and_bearer_auth(client: AsyncClient) -> None:
         _assert_problem(response, 401, "invalid_api_key")
         assert response.headers["www-authenticate"] == "Bearer"
         assert response.headers["cache-control"] == "no-store"
+    refresh = await client.post(f"/v1/spaces/{'a' * 32}/profile/refresh")
+    _assert_problem(refresh, 401, "invalid_api_key")
+    assert refresh.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    (
+        (TimeoutError, "database_unavailable"),
+        (psycopg.OperationalError, "database_unavailable"),
+        (psycopg.errors.UndefinedTable, "database_not_ready"),
+    ),
+)
+async def test_readiness_maps_adapter_failures(
+    failure: type[Exception], code: str
+) -> None:
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    pool = MagicMock()
+    pool.connection.return_value.__aenter__.side_effect = failure
+    check = partial(check_migration_readiness, pool, {}, timeout_seconds=3)
+    app.dependency_overrides[readiness_check] = lambda: check
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        _assert_problem(await client.get("/readyz"), 503, code)
 
 
 @pytest.mark.anyio
@@ -141,13 +190,20 @@ async def test_openapi_routes_and_operation_ids(
     spec = openapi_response.json()
     assert spec["openapi"].startswith("3.1.")
     assert spec["components"]["securitySchemes"]["ApiKey"]["scheme"] == "bearer"
-    for methods in spec["paths"].values():
+    for path, methods in spec["paths"].items():
         for operation in methods.values():
-            if "security" in operation:
+            for status in ("400", "413", "500"):
+                assert operation["responses"][status]["content"].keys() == {
+                    "application/problem+json"
+                }
+            if path.startswith("/v1/"):
                 assert operation["security"] == [{"ApiKey": []}]
                 assert operation["responses"]["401"]["content"].keys() == {
                     "application/problem+json"
                 }
+            else:
+                assert path in {"/livez", "/readyz"}
+                assert "security" not in operation
     assert {
         path: {method: op["operationId"] for method, op in methods.items()}
         for path, methods in spec["paths"].items()
@@ -360,6 +416,223 @@ async def test_request_errors_do_not_echo_input(client: AsyncClient) -> None:
     _assert_problem(
         await client.post("/v1/spaces", content=b" " * 65), 413, "request_too_large"
     )
+    _assert_problem(
+        await client.get("/v1/spaces", headers={"Content-Length": "-1"}),
+        400,
+        "invalid_content_length",
+    )
+    _assert_problem(
+        await client.get("/v1/spaces", headers={"Content-Length": "65"}),
+        413,
+        "request_too_large",
+    )
+
+    async def oversize_body() -> AsyncIterator[bytes]:
+        yield b" " * 33
+        yield b" " * 32
+
+    _assert_problem(
+        await client.post(
+            "/v1/spaces",
+            headers={"Content-Type": "application/json"},
+            content=oversize_body(),
+        ),
+        413,
+        "request_too_large",
+    )
+
+
+@pytest.mark.anyio
+async def test_unexpected_errors_keep_exception_messages_out_of_uvicorn_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    store = AsyncMock()
+    store.create_space.side_effect = RuntimeError("synthetic internal detail")
+    app.dependency_overrides[authenticated_owner] = lambda: "synthetic-owner"
+    app.dependency_overrides[authorized_storage] = lambda: store
+
+    @app.get("/v1/synthetic-stream")
+    async def stream() -> StreamingResponse:
+        async def broken_body() -> AsyncIterator[bytes]:
+            yield b"synthetic prefix"
+            raise RuntimeError("synthetic stream detail")
+
+        return StreamingResponse(broken_body())
+
+    server = Server(
+        Config(
+            app,
+            http="h11",
+            lifespan="off",
+            access_log=False,
+            log_config=None,
+            timeout_graceful_shutdown=2,
+        )
+    )
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        serving = asyncio.create_task(server.serve(sockets=[listener]))
+        try:
+            async with AsyncClient(
+                base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=5
+            ) as client:
+                response = await client.post("/v1/spaces", json={"name": "合成空间"})
+                async with client.stream("GET", "/v1/synthetic-stream") as started:
+                    assert started.status_code == 200
+                    assert started.headers["x-request-id"]
+                    with pytest.raises(RemoteProtocolError):
+                        await started.aread()
+        finally:
+            server.should_exit = True
+            await serving
+
+    _assert_problem(response, 500, "internal_error")
+    assert response.json()["detail"] == "服务处理请求时发生错误。"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-request-id"] in caplog.text
+    assert started.headers["x-request-id"] in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert any(
+        record.name == "uvicorn.error" and record.exc_info is not None
+        for record in caplog.records
+    )
+    assert "synthetic internal detail" not in caplog.text
+    assert "synthetic stream detail" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_resource_locations_and_injected_dependencies() -> None:
+    now = datetime(2020, 1, 1, tzinfo=UTC)
+    clock = FakeClock(at=now.timestamp())
+    app = create_app(Settings(RuntimeSettings("dbname=unused")), clock=clock)
+    store = FakeStorage()
+    operations = AsyncMock(spec=OperationAccess)
+    read_profile = AsyncMock()
+    submit_refresh = AsyncMock(return_value="queued")
+    owner = "synthetic-owner"
+    app.dependency_overrides[authenticated_owner] = lambda: owner
+    app.dependency_overrides[authorized_storage] = lambda: store
+    app.dependency_overrides[operation_access] = lambda: operations
+    app.dependency_overrides[profile_reader] = lambda: read_profile
+    app.dependency_overrides[profile_refresh_submitter] = lambda: submit_refresh
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post("/v1/spaces", json={"name": "合成空间"})
+        assert created.status_code == 201
+        assert created.json()["created_at"] == "2020-01-01T00:00:00Z"
+        space_id = SpaceId(created.json()["space_id"])
+        space_path = created.headers["location"]
+        assert space_path == f"/v1/spaces/{space_id.value}"
+        assert (await client.get(space_path)).json() == created.json()
+
+        session = await client.post(f"{space_path}/sessions")
+        assert session.status_code == 201
+        session_id = SessionId(session.json()["session_id"])
+        session_path = session.headers["location"]
+        assert session_path == f"{space_path}/sessions/{session_id.value}"
+        assert (await client.get(session_path)).json() == session.json()
+
+        operation = Operation(
+            operation_id="e" * 32,
+            session_id=session_id,
+            status="queued",
+            attempts=0,
+            created_at=now,
+            updated_at=now,
+            next_retry_at=None,
+            message_ids=None,
+            fact_change_count=None,
+            error_code=None,
+            error_stage=None,
+        )
+        operations.submit.return_value = operation
+        operations.get.return_value = operation
+        operations.list.return_value = ((1, operation),)
+        operations.list_fact_changes.return_value = (operation, ())
+        accepted = await client.post(
+            f"{session_path}/remember",
+            headers={"Idempotency-Key": "synthetic-key"},
+            json={"messages": [{"role": "user", "content": "合成原文"}]},
+        )
+        assert accepted.status_code == 202
+        operation_path = accepted.headers["location"]
+        assert operation_path == f"{space_path}/operations/{operation.operation_id}"
+        assert (await client.get(operation_path)).json() == accepted.json()
+        listed = await client.get(f"{space_path}/operations")
+        assert listed.json()["items"][0]["operation_id"] == operation.operation_id
+        changes = await client.get(f"{operation_path}/fact-changes")
+        assert changes.json() == {"items": [], "next_cursor": None, "status": "queued"}
+
+        evidence_id = FactId("d" * 32)
+        profile = Profile(
+            space_id,
+            {
+                "basic": (ProfileEntry("合成画像", (evidence_id,)),),
+                "communication_preferences": (),
+                "preferences": (),
+                "constraints": (),
+            },
+            now.timestamp(),
+        )
+        read_profile.return_value = (
+            profile,
+            ProfileRefreshState("queued", now + timedelta(seconds=30)),
+        )
+        refresh = await client.post(f"{space_path}/profile/refresh")
+        assert refresh.status_code == 202
+        assert refresh.json() == {"refresh_status": "queued"}
+        assert refresh.headers["location"] == f"{space_path}/profile"
+        view = await client.get(refresh.headers["location"])
+        assert view.status_code == 200
+        assert view.json()["profile"]["basic"] == [
+            {"text": "合成画像", "fact_ids": [evidence_id.value]}
+        ]
+        assert view.json()["next_retry_at"] == "2020-01-01T00:00:30Z"
+
+    operations.get.assert_awaited_once_with(owner, space_id, operation.operation_id)
+    read_profile.assert_awaited_once_with(owner, space_id, clock=clock)
+    submit_refresh.assert_awaited_once_with(owner, space_id, configured=False)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    (
+        (IdempotencyConflict, 409, "idempotency_conflict"),
+        (QueueFull, 503, "remember_queue_full"),
+        (WriteModelsUnavailable, 503, "write_models_unavailable"),
+    ),
+)
+async def test_remember_maps_submission_failures(
+    failure: type[Exception], status: int, code: str
+) -> None:
+    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    operations = AsyncMock(spec=OperationAccess)
+    operations.submit.side_effect = failure
+    operations.get.side_effect = OperationNotFound
+    app.dependency_overrides[authenticated_owner] = lambda: "synthetic-owner"
+    app.dependency_overrides[operation_access] = lambda: operations
+    space_path = f"/v1/spaces/{'a' * 32}"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"{space_path}/sessions/{'b' * 32}/remember",
+            headers={"Idempotency-Key": "synthetic-key"},
+            json={"messages": [{"role": "user", "content": "合成原文"}]},
+        )
+        _assert_problem(response, status, code)
+        _assert_problem(
+            await client.get(f"{space_path}/operations/{'c' * 32}"),
+            404,
+            "operation_not_found",
+        )
 
 
 @pytest.mark.anyio
@@ -491,7 +764,8 @@ async def test_pre_epoch_times_round_trip_over_http() -> None:
         await writer.upsert_entity(subject)
         await writer.save_facts((fact, other), changed_at=end.timestamp())
 
-    app = create_app(Settings(RuntimeSettings("dbname=unused")))
+    clock = FakeClock(at=end.timestamp())
+    app = create_app(Settings(RuntimeSettings("dbname=unused")), clock=clock)
     app.dependency_overrides[authorized_storage] = lambda: storage
     app.state.embedder = FakeEmbedder()
     path = f"/v1/spaces/{space.id.value}"
@@ -508,6 +782,7 @@ async def test_pre_epoch_times_round_trip_over_http() -> None:
         filters: dict[str, str | int] = {"state": "all", "limit": 1}
         first = await client.get(f"{path}/facts", params=filters)
         assert first.status_code == 200
+        assert first.json()["evaluated_at"] == "1965-01-02T00:00:00Z"
         item = first.json()["items"][0]
         assert item["fact_id"] == fact.id.value
         assert item["valid_at"] == "1965-01-01T00:00:00Z"
@@ -519,8 +794,14 @@ async def test_pre_epoch_times_round_trip_over_http() -> None:
         )
         cursor = first.json()["next_cursor"]
         assert cursor
+        clock.at += 86_400
         second = await client.get(f"{path}/facts", params={**filters, "cursor": cursor})
+        assert second.json()["evaluated_at"] == first.json()["evaluated_at"]
         assert second.json()["items"][0]["fact_id"] == other.id.value
+        as_of = "1965-01-01T12:00:00Z"
+        as_of_page = await client.get(f"{path}/facts", params={"as_of": as_of})
+        assert as_of_page.status_code == 200
+        assert as_of_page.json()["evaluated_at"] == as_of
         detail = await client.get(f"{path}/facts/{item['fact_id']}")
         assert detail.json() == item
         original = await client.get(f"{path}/messages/{item['source_message_ids'][0]}")
@@ -529,7 +810,7 @@ async def test_pre_epoch_times_round_trip_over_http() -> None:
 
         recalled = await client.post(
             f"{path}/recall",
-            json={"query": "旧档案", "as_of": "1965-01-01T12:00:00Z"},
+            json={"query": "旧档案", "as_of": as_of},
         )
         assert recalled.status_code == 200
         evidence = recalled.json()["evidence"]

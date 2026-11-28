@@ -1,6 +1,5 @@
 """在已授权空间召回事实并读取证据和原文。"""
 
-from datetime import UTC, datetime
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -8,12 +7,13 @@ from fastapi.exceptions import RequestValidationError
 
 from ...application.recall import Recall, RecallQuery
 from ...domain.ids import FactId, MessageId, SpaceId
+from ...domain.time import utc_datetime
 from ...domain.values import Label
 from ...ports.inference import Embedder
 from ...ports.queries import FactFilter, FactQuery
 from ...ports.reranker import Reranker
-from ...ports.runtime import Clock
 from ..auth import AuthorizedStorage
+from ..dependencies import ClockDependency
 from ..errors import problem_responses
 from ..recall_usage import RecallUsageQueue
 from .audit_schemas import (
@@ -36,7 +36,7 @@ from .schemas import ResourceId, require_empty_body, require_json
 router = APIRouter(
     prefix="/spaces/{space_id}",
     tags=["memory"],
-    responses=problem_responses(401, 404, 422, 500, 503),
+    responses=problem_responses(401, 404, 422, 503),
 )
 
 
@@ -44,13 +44,14 @@ router = APIRouter(
     "/recall",
     operation_id="recall",
     dependencies=[Depends(require_json)],
-    responses=problem_responses(400, 413, 415, 502),
+    responses=problem_responses(415, 502),
 )
 async def recall(
     space_id: ResourceId,
     body: RecallRequest,
     request: Request,
     storage: AuthorizedStorage,
+    clock: ClockDependency,
 ) -> RecallResponse:
     """返回查询时点有效的可见事实证据。"""
     try:
@@ -76,7 +77,7 @@ async def recall(
         space_id=space,
         storage=storage,
         embedder=embedder,
-        clock=cast(Clock, request.app.state.recall_clock),
+        clock=clock,
         exclude_sensitive=not body.include_sensitive,
         reranker=reranker,
     )
@@ -104,6 +105,7 @@ async def list_facts(
     space_id: ResourceId,
     query: Annotated[FactListQuery, Query()],
     storage: AuthorizedStorage,
+    clock: ClockDependency,
 ) -> FactPage:
     """按有效状态筛选并分页列出可见事实。"""
     scope = FactListScope(
@@ -123,7 +125,7 @@ async def list_facts(
         evaluated_at = (
             cursor.evaluated_at
             if cursor is not None
-            else query.as_of or datetime.now(UTC)
+            else query.as_of or utc_datetime(clock.now())
         )
         spec = FactQuery(
             filters=FactFilter(
@@ -221,7 +223,6 @@ async def get_message(
     status_code=204,
     response_class=Response,
     dependencies=[Depends(require_empty_body)],
-    responses=problem_responses(400, 413),
 )
 async def delete_fact(
     space_id: ResourceId, fact_id: ResourceId, storage: AuthorizedStorage
