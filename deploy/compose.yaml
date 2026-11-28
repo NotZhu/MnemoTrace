@@ -68,7 +68,18 @@ services:
 
   worker:
     <<: *runtime
-    command: [python, -m, mnemotrace.worker, --concurrency, "${MNEMOTRACE_WORKER_CONCURRENCY:-2}", --readiness-port, "8101"]
+    command:
+      - python
+      - -m
+      - mnemotrace.worker
+      - --concurrency
+      - "${MNEMOTRACE_WORKER_CONCURRENCY:-2}"
+      - --profile-concurrency
+      - "${MNEMOTRACE_WORKER_PROFILE_CONCURRENCY:-1}"
+      - --summary-concurrency
+      - "${MNEMOTRACE_WORKER_SUMMARY_CONCURRENCY:-1}"
+      - --readiness-port
+      - "8101"
     healthcheck:
       test: [CMD, python, -c, "from socket import create_connection; create_connection(('127.0.0.1', 8101), timeout=2).close()"]
       interval: 5s

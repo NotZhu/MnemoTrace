@@ -19,6 +19,18 @@
 
 API 和 worker 等待池连接的时限为 3 秒。`MNEMOTRACE_DB_LOCK_TIMEOUT_SECONDS` 默认 1 秒，`MNEMOTRACE_DB_STATEMENT_TIMEOUT_SECONDS` 默认 15 秒，`MNEMOTRACE_DB_MAINTENANCE_TIMEOUT_SECONDS` 默认 60 秒。维护时限应用于会话擦除、空间清空和空间删除的单条语句。配置须满足等锁时限小于普通语句时限，且普通语句时限小于等于维护语句时限。
 
+在根目录 `.env` 中配置 worker 的消费者数量。三项均接受 1 至 16 的整数。
+
+| 任务 | Compose 环境变量 | 独立 worker 参数 | 默认数量 |
+| --- | --- | --- | ---: |
+| 记忆写入 | `MNEMOTRACE_WORKER_CONCURRENCY` | `--concurrency` | 2 |
+| 画像刷新 | `MNEMOTRACE_WORKER_PROFILE_CONCURRENCY` | `--profile-concurrency` | 1 |
+| 会话摘要 | `MNEMOTRACE_WORKER_SUMMARY_CONCURRENCY` | `--summary-concurrency` | 1 |
+
+每个 worker 的数据库连接池上限为三类消费者数量之和。部署多个副本时，将所有副本的连接池上限和 API 等进程的连接数一并计入 PostgreSQL 连接预算。三类任务的补全请求共享进程内的 `MNEMOTRACE_INFERENCE_MAX_IN_FLIGHT`（默认 4）。模型并发已满时，增加消费者会增加等待。
+
+已有部署修改并发后，运行 `docker compose --env-file .env -f deploy/compose.yaml up -d --no-deps --wait worker` 应用配置并等待就绪探针通过。查看 worker 启动日志，核对三类并发和 `max_db_connections`。
+
 `MNEMOTRACE_EXTRACTION_TIMEZONE` 接受 IANA 时区名称，默认 `UTC`。API 用它校验新写入任务的发言时刻，worker 用它解释「今天」等相对日期。API 和所有 worker 须使用相同值。切换时区前暂停接收新写入，等已有写入任务进入终态，再同时更新 API 和所有 worker 的配置。
 
 ## 自管 PostgreSQL 分权

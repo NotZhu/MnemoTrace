@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -1210,7 +1210,7 @@ def test_worker_resumes_refresh_and_publishes_the_http_profile(
                 workers.create_task(
                     worker._serve(
                         RuntimeSettings(database.runtime),
-                        1,
+                        worker._WorkerConcurrency(write=1),
                         stopping,
                         None,
                     )
@@ -1236,7 +1236,7 @@ def test_worker_resumes_refresh_and_publishes_the_http_profile(
                 workers.create_task(
                     worker._serve(
                         RuntimeSettings(database.runtime),
-                        1,
+                        worker._WorkerConcurrency(write=1),
                         stopping,
                         None,
                     )
@@ -1266,6 +1266,69 @@ def test_worker_resumes_refresh_and_publishes_the_http_profile(
             )
             assert removal.status_code == 204
             assert (await scope.view())["profile"] is None
+
+    run(exercise())
+
+
+def test_worker_refreshes_different_profiles_concurrently(
+    isolated_database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def exercise() -> None:
+        database = isolated_database
+        both_entered, release = asyncio.Event(), asyncio.Event()
+
+        async def hold_inference() -> None:
+            if len(model.prompts) == 2:
+                both_entered.set()
+            await release.wait()
+
+        model = _Model(before_response=hold_inference)
+        clients = InferenceClients(llm=model, embedder=FakeEmbedder())
+        monkeypatch.setattr(
+            worker, "open_inference", lambda *args, **kwargs: nullcontext(clients)
+        )
+
+        async with _http_space(database) as first, _http_space(database) as second:
+            async with pool(database.runtime) as connections:
+                for scope, identifier in ((first, "first"), (second, "second")):
+                    storage = PostgresStorage(connections, owner_id=scope.owner)
+                    await _write_fact(scope, storage, identifier)
+                    assert await scope.submit() == {"refresh_status": "queued"}
+
+            stopping = asyncio.Event()
+            async with asyncio.TaskGroup() as workers:
+                workers.create_task(
+                    worker._serve(
+                        RuntimeSettings(database.runtime),
+                        worker._WorkerConcurrency(profile=2),
+                        stopping,
+                        None,
+                    )
+                )
+                try:
+                    async with asyncio.timeout(10):
+                        await both_entered.wait()
+                        assert (await first.view())["refresh_status"] == "running"
+                        assert (await second.view())["refresh_status"] == "running"
+                        release.set()
+                        while True:
+                            results = await asyncio.gather(first.view(), second.view())
+                            if all(
+                                result["refresh_status"] == "succeeded"
+                                for result in results
+                            ):
+                                break
+                            await asyncio.sleep(0.02)
+                finally:
+                    release.set()
+                    stopping.set()
+
+            assert sorted(model.prompts) == [["first"], ["second"]]
+            for result, identifier in zip(results, ("first", "second"), strict=True):
+                assert result["profile"] == {
+                    **_EMPTY,
+                    "basic": [{"text": model.text, "fact_ids": [identifier]}],
+                }
 
     run(exercise())
 

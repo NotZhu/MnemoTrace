@@ -1,4 +1,4 @@
-"""启动独立的 PostgreSQL 记忆写入 worker。"""
+"""启动独立的 PostgreSQL 后台任务 worker。"""
 
 import argparse
 import asyncio
@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 from contextlib import nullcontext
+from dataclasses import dataclass
 from types import FrameType
 from typing import Protocol
 
@@ -27,6 +28,15 @@ from .application.session_summary_refresh import SessionSummaryRunner
 from .runtime_settings import RuntimeSettings
 
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _WorkerConcurrency:
+    """记录当前 worker 的写入、画像和摘要消费者数量。"""
+
+    write: int = 2
+    profile: int = 1
+    summary: int = 1
 
 
 class _Runner(Protocol):
@@ -57,11 +67,12 @@ def _close_probe(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 async def _serve(
     settings: RuntimeSettings,
-    concurrency: int,
+    concurrency: _WorkerConcurrency,
     stopping: asyncio.Event,
     readiness_port: int | None,
 ) -> None:
-    pool = runtime_pool(settings, max_size=concurrency + 2)
+    max_db_connections = concurrency.write + concurrency.profile + concurrency.summary
+    pool = runtime_pool(settings, max_size=max_db_connections)
     async with (
         open_inference(settings.inference_env, llm=True, embed=True) as clients,
         pool,
@@ -89,7 +100,9 @@ async def _serve(
                 timezone=settings.extraction_timezone,
             )
 
-        runner = OperationRunner(PostgresOperations(pool), remember_for, _is_transient)
+        write_runner = OperationRunner(
+            PostgresOperations(pool), remember_for, _is_transient
+        )
         profile_runner = ProfileRefreshRunner(
             PostgresProfileRefresh(pool),
             storage_for,
@@ -105,18 +118,28 @@ async def _serve(
             if readiness_port is not None
             else nullcontext()
         )
-        _LOG.info("写入 worker 已启动 concurrency=%d", concurrency)
+        _LOG.info(
+            "后台 worker 已启动 write_concurrency=%d profile_concurrency=%d "
+            "summary_concurrency=%d max_db_connections=%d",
+            concurrency.write,
+            concurrency.profile,
+            concurrency.summary,
+            max_db_connections,
+        )
         async with asyncio.TaskGroup() as workers, readiness:
-            for _ in range(concurrency):
-                workers.create_task(_consume(runner, stopping))
-            workers.create_task(_consume(profile_runner, stopping))
-            workers.create_task(_consume(summary_runner, stopping))
+            for runner, count in (
+                (write_runner, concurrency.write),
+                (profile_runner, concurrency.profile),
+                (summary_runner, concurrency.summary),
+            ):
+                for _ in range(count):
+                    workers.create_task(_consume(runner, stopping))
             await stopping.wait()
 
 
 async def _run(
     settings: RuntimeSettings,
-    concurrency: int,
+    concurrency: _WorkerConcurrency,
     readiness_port: int | None = None,
 ) -> None:
     stopping = asyncio.Event()
@@ -148,28 +171,44 @@ async def _run(
 
 
 def main() -> int:
-    """读取数据库、推理和抽取时区配置并运行写入任务。"""
+    """读取运行和并发配置，启动后台任务消费者。"""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--concurrency", type=int, default=2, metavar="1-16")
+    defaults = _WorkerConcurrency()
+    for option, default, description in (
+        ("--concurrency", defaults.write, "记忆写入消费者数量"),
+        ("--profile-concurrency", defaults.profile, "画像刷新消费者数量"),
+        ("--summary-concurrency", defaults.summary, "会话摘要消费者数量"),
+    ):
+        parser.add_argument(
+            option,
+            type=int,
+            choices=range(1, 17),
+            default=default,
+            metavar="1-16",
+            help=description,
+        )
     parser.add_argument("--readiness-port", type=int, help="在本机监听的就绪探针端口")
     args = parser.parse_args()
-    if not 1 <= args.concurrency <= 16:
-        parser.error("--concurrency 须为 1 至 16")
     if args.readiness_port is not None and not 1 <= args.readiness_port <= 65535:
         parser.error("--readiness-port 须为 1 至 65535")
+    concurrency = _WorkerConcurrency(
+        write=args.concurrency,
+        profile=args.profile_concurrency,
+        summary=args.summary_concurrency,
+    )
     logging.basicConfig(level=logging.WARNING)
     _LOG.setLevel(logging.INFO)
     try:
         settings = RuntimeSettings.from_env(os.environ)
         loop_factory = asyncio.SelectorEventLoop if sys.platform == "win32" else None
         asyncio.run(
-            _run(settings, args.concurrency, args.readiness_port),
+            _run(settings, concurrency, args.readiness_port),
             loop_factory=loop_factory,
         )
     except ValueError as exc:
         parser.error(str(exc))
     except (psycopg.Error, OSError, ExceptionGroup) as exc:
-        _LOG.error("写入 worker 中止 type=%s", type(exc).__name__)
+        _LOG.error("后台 worker 中止 type=%s", type(exc).__name__)
         return 1
     except KeyboardInterrupt:
         pass

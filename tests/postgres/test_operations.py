@@ -443,7 +443,7 @@ def test_http_write_worker_uses_extraction_timezone(
                     RuntimeSettings(
                         database.runtime, extraction_timezone=ZoneInfo(zone)
                     ),
-                    1,
+                    worker._WorkerConcurrency(write=1),
                 ),
                 timeout=5,
             )

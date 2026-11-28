@@ -3,8 +3,9 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass
+from typing import cast
 from unittest.mock import AsyncMock, PropertyMock
 
 import psycopg
@@ -612,7 +613,7 @@ def test_worker_consumes_persisted_summary_after_startup(
                 tasks.create_task(
                     worker._serve(
                         RuntimeSettings(database.runtime),
-                        1,
+                        worker._WorkerConcurrency(write=1),
                         stopping,
                         None,
                     )
@@ -627,5 +628,73 @@ def test_worker_consumes_persisted_summary_after_startup(
                         assert state is not None and state[:2] == ("idle", "已归纳。")
                 finally:
                     stopping.set()
+
+    run(exercise())
+
+
+def test_worker_summarizes_different_sessions_concurrently(
+    isolated_database: PgDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def exercise() -> None:
+        database = isolated_database
+        both_entered = asyncio.Event()
+
+        class ParallelModel(_Model):
+            async def _structured_response(
+                self, *, system: str, prompt: str, schema: Mapping[str, object]
+            ) -> Mapping[str, object]:
+                if schema["required"] == ["summary"] and len(self.prompts) == 1:
+                    both_entered.set()
+                return await super()._structured_response(
+                    system=system, prompt=prompt, schema=schema
+                )
+
+        model = ParallelModel(blocked=True)
+        clients = InferenceClients(llm=model, embedder=FakeEmbedder())
+        monkeypatch.setattr(
+            worker, "open_inference", lambda *args, **kwargs: nullcontext(clients)
+        )
+
+        async with _scope(database) as scope:
+            second = SessionId("second-session")
+            async with scope.storage.session(scope.space.id, write=True) as writer:
+                await writer.register_session(second)
+            await scope.append(*range(1, 19))
+            await scope.append(*range(21, 39), session=second)
+
+            stopping = asyncio.Event()
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(
+                    worker._serve(
+                        RuntimeSettings(database.runtime),
+                        worker._WorkerConcurrency(summary=2),
+                        stopping,
+                        None,
+                    )
+                )
+                try:
+                    async with asyncio.timeout(10):
+                        await both_entered.wait()
+                        for session in (SESSION, second):
+                            state = scope.state(session)
+                            assert state is not None and state[0] == "running"
+                        model.release.set()
+                        while True:
+                            states = (scope.state(SESSION), scope.state(second))
+                            if all(
+                                state is not None and state[0] == "idle"
+                                for state in states
+                            ):
+                                break
+                            await asyncio.sleep(0.02)
+                finally:
+                    model.release.set()
+                    stopping.set()
+
+            assert all(state is not None and state[1] == "已归纳。" for state in states)
+            assert sorted(
+                cast(list[dict[str, str]], prompt["messages"])[0]["content"]
+                for prompt in model.prompts
+            ) == ["1", "21"]
 
     run(exercise())

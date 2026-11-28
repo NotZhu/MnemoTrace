@@ -1,27 +1,124 @@
 """验证写入 worker 的启动和停机边界。"""
 
 import asyncio
+import logging
 import signal
 import sys
+from collections import Counter
 from collections.abc import Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from types import FrameType
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 from mnemotrace import worker
+from mnemotrace.adapters.inference import InferenceClients
 from mnemotrace.adapters.postgres.storage import _return_committed_connection
 from mnemotrace.application.operations import (
     ClaimedOperation,
     OperationQueue,
     OperationRunner,
 )
+from mnemotrace.application.profile_refresh import ProfileRefreshRunner
 from mnemotrace.application.remember import Remember
+from mnemotrace.application.session_summary_refresh import SessionSummaryRunner
 from mnemotrace.application.task_policy import ClaimOutcome
 from mnemotrace.domain.ids import SessionId, SpaceId
 from mnemotrace.runtime_settings import RuntimeSettings
 from mnemotrace.server.__main__ import main as server_main
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ((), (2, 1, 1)),
+        (("--profile-concurrency", "3"), (2, 3, 1)),
+        (("--concurrency", "1", "--summary-concurrency", "16"), (1, 1, 16)),
+    ],
+)
+def test_worker_passes_concurrency_to_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    flags: tuple[str, ...],
+    expected: tuple[int, int, int],
+) -> None:
+    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", "dbname=unused")
+    monkeypatch.delenv("MNEMOTRACE_EXTRACTION_TIMEZONE", raising=False)
+    monkeypatch.setattr(sys, "argv", ["mnemotrace.worker", *flags])
+    run_worker = AsyncMock()
+    monkeypatch.setattr(worker, "_run", run_worker)
+
+    assert worker.main() == 0
+    run_worker.assert_awaited_once()
+    concurrency = run_worker.await_args_list[0].args[1]
+    assert (concurrency.write, concurrency.profile, concurrency.summary) == expected
+
+
+@pytest.mark.parametrize(
+    "option", ["--concurrency", "--profile-concurrency", "--summary-concurrency"]
+)
+@pytest.mark.parametrize("value", ["0", "17", "invalid"])
+def test_worker_rejects_invalid_concurrency_before_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv("MNEMOTRACE_POSTGRES_DSN", "dbname=unused")
+    monkeypatch.setattr(sys, "argv", ["mnemotrace.worker", option, value])
+    run_worker = AsyncMock()
+    monkeypatch.setattr(worker, "_run", run_worker)
+
+    with pytest.raises(SystemExit) as exit_info:
+        worker.main()
+    assert exit_info.value.code == 2
+    assert option in capsys.readouterr().err.splitlines()[-1]
+    run_worker.assert_not_awaited()
+
+
+def test_worker_starts_configured_consumers_with_matching_pool_limit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    checksums = {"001": "checksum"}
+    cursor = Mock(fetchall=AsyncMock(return_value=list(checksums.items())))
+    connection = Mock(execute=AsyncMock(return_value=cursor))
+    pool = MagicMock()
+    pool.connection.return_value = nullcontext(connection)
+    make_pool = Mock(return_value=pool)
+    clients = InferenceClients(llm=Mock(), embedder=Mock())
+    monkeypatch.setattr(worker, "runtime_pool", make_pool)
+    monkeypatch.setattr(
+        worker, "open_inference", Mock(return_value=nullcontext(clients))
+    )
+    monkeypatch.setattr(worker, "migration_checksums", Mock(return_value=checksums))
+    caplog.set_level(logging.INFO, logger=worker.__name__)
+
+    async def exercise() -> None:
+        stopping = asyncio.Event()
+        started: Counter[type[worker._Runner]] = Counter()
+
+        async def count_consumer(runner: worker._Runner, stop: asyncio.Event) -> None:
+            started[type(runner)] += 1
+            if started.total() == 6:
+                stop.set()
+
+        monkeypatch.setattr(worker, "_consume", count_consumer)
+        settings = RuntimeSettings("dbname=unused")
+        concurrency = worker._WorkerConcurrency(write=2, profile=3, summary=1)
+        await asyncio.wait_for(worker._serve(settings, concurrency, stopping, None), 2)
+
+        make_pool.assert_called_once_with(settings, max_size=6)
+        assert started == {
+            OperationRunner: 2,
+            ProfileRefreshRunner: 3,
+            SessionSummaryRunner: 1,
+        }
+
+    asyncio.run(exercise())
+    assert (
+        "write_concurrency=2 profile_concurrency=3 summary_concurrency=1 max_db_connections=6"
+        in caplog.text
+    )
 
 
 @pytest.mark.parametrize(
@@ -169,7 +266,7 @@ def test_worker_stops_after_cancel_is_consumed_returning_a_connection(
 
         async def serve(
             settings: RuntimeSettings,
-            concurrency: int,
+            concurrency: worker._WorkerConcurrency,
             stopping: asyncio.Event,
             readiness_port: int | None,
         ) -> None:
@@ -181,7 +278,9 @@ def test_worker_stops_after_cancel_is_consumed_returning_a_connection(
             patch.setattr(worker, "_serve", serve)
             patch.setattr(signal, "signal", capture)
             supervisor = asyncio.create_task(
-                worker._run(RuntimeSettings("dbname=unused"), 1)
+                worker._run(
+                    RuntimeSettings("dbname=unused"), worker._WorkerConcurrency(write=1)
+                )
             )
             try:
                 await asyncio.wait_for(returning.wait(), 2)
