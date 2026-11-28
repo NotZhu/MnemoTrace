@@ -1,6 +1,6 @@
 """定义带来源及有效区间的事实。"""
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Self
 
 from ._validation import (
@@ -13,7 +13,7 @@ from ._validation import (
 from .enums import ProfileGroup, Source
 from .errors import InvalidFact
 from .ids import FactId, MessageId, SpaceId
-from .values import ContentHash, EntityRef, Label, LiteralValue, Predicate, content_hash
+from .values import EntityRef, Label, LiteralValue, Predicate
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,6 @@ class Fact:
     sensitive: bool
     source: Source
     profile_groups: tuple[ProfileGroup, ...] = ()
-    content_hash: ContentHash = field(init=False)
 
     def __post_init__(self) -> None:
         require_type(self.id, FactId, "id", InvalidFact)
@@ -70,7 +69,7 @@ class Fact:
             raise InvalidFact("expired_at 必须晚于或等于 recorded_at")
 
         try:
-            fingerprint = ContentHash(content_hash(self.text))
+            self.text.encode("utf-8")
         except UnicodeEncodeError as exc:
             raise InvalidFact("text 必须能编码为 UTF-8") from exc
         object.__setattr__(self, "valid_at", valid_at)
@@ -80,7 +79,6 @@ class Fact:
         object.__setattr__(self, "provenance", tuple(dict.fromkeys(self.provenance)))
         labels = tuple(sorted(set(self.labels), key=lambda label: label.value))
         object.__setattr__(self, "labels", labels)
-        object.__setattr__(self, "content_hash", fingerprint)
 
     @property
     def is_edge(self) -> bool:

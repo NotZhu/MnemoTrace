@@ -164,7 +164,7 @@ def fact_from_row(**row: Unpack[FactRow]) -> Fact:
         **row: FactRow 声明的字段，来源及前驱按保存顺序传入。
 
     Returns:
-        已还原的事实，包括有序引用和派生的正文指纹。
+        已还原的事实，保留引用顺序。
     """
     object_entity_id = row["object_entity_id"]
     if object_entity_id is None:

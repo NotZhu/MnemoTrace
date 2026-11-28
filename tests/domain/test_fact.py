@@ -9,13 +9,7 @@ from mnemotrace.domain.enums import Source
 from mnemotrace.domain.errors import InvalidFact
 from mnemotrace.domain.fact import Fact
 from mnemotrace.domain.ids import EntityId, FactId, MessageId, SpaceId
-from mnemotrace.domain.values import (
-    ContentHash,
-    EntityRef,
-    Label,
-    LiteralValue,
-    Predicate,
-)
+from mnemotrace.domain.values import EntityRef, Label, LiteralValue, Predicate
 
 
 @pytest.fixture
@@ -43,14 +37,11 @@ def fact() -> Fact:
     )
 
 
-def test_fact_normalizes_provenance_and_labels_and_derives_hash(fact: Fact) -> None:
+def test_fact_preserves_text_and_normalizes_provenance_and_labels(fact: Fact) -> None:
     assert fact.text == "　Ａｌｉｃｅ\tlikes\ntea "
     assert fact.provenance == (MessageId("m2"), MessageId("m1"))
     assert fact.labels == (Label("food"), Label("sports"))
     assert fact.is_edge
-    assert fact.content_hash == ContentHash(
-        "31006013baec0b33f6cfc3a2ec44bf3c44d41fe664ec118c093436152c4a2e55"
-    )
     assert type(fact.valid_at) is float
 
 
@@ -77,6 +68,7 @@ def test_manual_literal_fact_can_have_unknown_start_and_no_provenance(
     "changes",
     (
         {"text": " \t"},
+        {"text": "\ud800"},
         {"space_id": "space"},
         {"subject": LiteralValue("Alice")},
         {"predicate": "likes"},
