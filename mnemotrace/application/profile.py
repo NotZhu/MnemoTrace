@@ -5,12 +5,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ..domain.entity import Entity
-from ..domain.enums import ProfileGroup, Source
-from ..domain.fact import Fact
+from ..domain.enums import ProfileGroup
 from ..domain.ids import FactId
 from ..domain.profile import Profile, ProfileEntry
 from ..ports.inference import LLM, InferenceInputTooLarge, InvalidStructuredOutput
 from ..ports.storage import SpaceReader
+from .profile_evidence import is_profile_evidence
 
 MAX_PROFILE_FACTS = 128
 _MAX_GROUP_CHARS = 300
@@ -54,19 +54,6 @@ class ProfileEvidence:
     text: str
     valid_at: float | None
     invalid_at: float | None
-
-
-def is_profile_evidence(fact: Fact, subject: Entity, at: float) -> bool:
-    """判断事实在指定时刻能否作为空间用户的画像证据。"""
-    return (
-        fact.space_id == subject.space_id
-        and fact.subject.entity_id == subject.id
-        and fact.source is Source.EXTRACTED
-        and bool(fact.profile_groups)
-        and not fact.sensitive
-        and (fact.valid_at is None or fact.valid_at <= at)
-        and (fact.invalid_at is None or at < fact.invalid_at)
-    )
 
 
 async def read_visible_profile(

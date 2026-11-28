@@ -26,7 +26,10 @@ def test_connection_pool_keeps_connect_timeout_independent(
             {"MNEMOTRACE_POSTGRES_DSN": dsn, **pool_env}
         )
         connections = runtime_pool(settings, max_size=1)
-        effective = conninfo_to_dict(connections.conninfo, **(connections.kwargs or {}))
+        pool_dsn, pool_kwargs = connections.conninfo, connections.kwargs
+        assert isinstance(pool_dsn, str)
+        assert pool_kwargs is None or isinstance(pool_kwargs, dict)
+        effective = conninfo_to_dict(pool_dsn, **(pool_kwargs or {}))
         assert effective["connect_timeout"] == connect_timeout
         assert connections.timeout == pool_timeout
 

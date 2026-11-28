@@ -28,12 +28,14 @@ from mnemotrace.adapters.postgres.profile_refresh import (
     _NEXT_DUE_SPACE,
     PostgresProfileRefresh,
     _group_evidence_query,
+    _read_group_evidence,
 )
 from mnemotrace.adapters.postgres.session import PostgresSession
 from mnemotrace.adapters.runtime import SystemClock, UuidGenerator
 from mnemotrace.application import profile_refresh
 from mnemotrace.application.operations import OperationRunner
 from mnemotrace.application.profile import MAX_PROFILE_FACTS
+from mnemotrace.application.profile_evidence import is_profile_evidence
 from mnemotrace.application.profile_refresh import (
     ClaimedProfileRefresh,
     ProfileRefreshRunner,
@@ -59,7 +61,7 @@ from mnemotrace.server.v1 import profiles
 
 from ..ports.fakes import FakeClock, FakeEmbedder, FakeLLM
 from .conftest import PgDatabase
-from .sample import SESSION, fact, message, pool, run
+from .sample import SESSION, fact, message, pool, run, space
 
 pytestmark = pytest.mark.postgres
 _EMPTY: dict[str, list[object]] = {
@@ -68,6 +70,19 @@ _EMPTY: dict[str, list[object]] = {
     "preferences": [],
     "constraints": [],
 }
+
+
+@pytest.fixture
+def profile_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """保持证据时点可控，任务领取和退避继续使用数据库时钟。"""
+    clock = FakeClock()
+
+    async def reference_time(_session: PostgresSession) -> float:
+        return clock.now()
+
+    monkeypatch.setattr(PostgresSession, "_profile_reference_time", reference_time)
+    monkeypatch.setattr(profiles, "time", clock.now)
+    return clock
 
 
 @dataclass(frozen=True)
@@ -1915,12 +1930,70 @@ def test_profile_failure_keeps_all_published_groups_until_recovery(
     run(exercise())
 
 
+def test_profile_evidence_matches_indexed_sql(database: PgDatabase) -> None:
+    """在相同的事实与时点上核对 Python 与 PostgreSQL 的证据判定。"""
+
+    async def exercise() -> None:
+        scope = space()
+        subject = Entity.space_user(scope.id)
+        other = Entity(scope.id, "星河项目")
+        source = message(scope, "profile-source")
+        group = ProfileGroup.BASIC
+        seed = replace(
+            fact(subject, "ongoing", provenance=(source.id,)), profile_groups=(group,)
+        )
+        cases = (
+            seed,
+            replace(seed, id=FactId("starts"), valid_at=100.0),
+            replace(seed, id=FactId("ends"), invalid_at=100.0, expired_at=20.0),
+            replace(seed, id=FactId("sensitive"), sensitive=True),
+            replace(seed, id=FactId("unassigned"), profile_groups=()),
+            replace(
+                seed,
+                id=FactId("other-group"),
+                profile_groups=(ProfileGroup.CONSTRAINTS,),
+            ),
+            replace(fact(subject, "manual"), profile_groups=(group,)),
+            replace(
+                fact(other, "other-subject", provenance=(source.id,)),
+                profile_groups=(group,),
+            ),
+        )
+        async with pool(database.runtime) as connections:
+            storage = PostgresStorage(connections, owner_id=scope.owner_id)
+            await storage.create_space(scope)
+            async with storage.session(scope.id, write=True) as writer:
+                await writer.upsert_entity(subject)
+                await writer.upsert_entity(other)
+                await writer.register_session(SESSION)
+                await writer.append_messages((source,))
+                await writer.save_facts(cases, changed_at=20.0)
+            async with connections.connection() as conn:
+                for at, expected in (
+                    (99.0, {"ongoing", "ends"}),
+                    (100.0, {"ongoing", "starts"}),
+                ):
+                    assert {
+                        item.id.value
+                        for item in cases
+                        if group in item.profile_groups
+                        and is_profile_evidence(item, subject, at)
+                    } == expected
+                    assert {
+                        item.id.value
+                        for item in await _read_group_evidence(
+                            conn, scope.id, group, at
+                        )
+                    } == expected
+
+    run(exercise())
+
+
 def test_automatic_group_refresh_wakes_on_activation_and_expiry(
     database: PgDatabase,
-    monkeypatch: pytest.MonkeyPatch,
+    profile_clock: FakeClock,
 ) -> None:
-    clock = FakeClock(at=datetime.now(UTC).timestamp())
-    monkeypatch.setattr(profiles, "time", clock.now)
+    clock = profile_clock
 
     async def exercise() -> None:
         async with (
@@ -2151,12 +2224,11 @@ def test_profile_get_checks_expiry_after_opening_read_session(
 )
 def test_fact_write_preserves_unprocessed_profile_expiry(
     database: PgDatabase,
-    monkeypatch: pytest.MonkeyPatch,
+    profile_clock: FakeClock,
     change: str,
     expiry_processed: bool,
 ) -> None:
-    clock = FakeClock()
-    monkeypatch.setattr(profiles, "time", clock.now)
+    clock = profile_clock
 
     async def exercise() -> None:
         async with (

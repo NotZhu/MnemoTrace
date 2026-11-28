@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -13,8 +14,13 @@ from mnemotrace.application.profile import (
     ProfileInputTooLarge,
     generate_profile,
 )
-from mnemotrace.domain.enums import ProfileGroup
-from mnemotrace.domain.ids import FactId
+from mnemotrace.application.profile_evidence import (
+    ProfileFactState,
+    changed_profile_evidence,
+    profile_evidence_impact,
+)
+from mnemotrace.domain.enums import ProfileGroup, Source
+from mnemotrace.domain.ids import EntityId, FactId
 from mnemotrace.domain.profile import ProfileEntry
 from mnemotrace.ports.inference import InvalidStructuredOutput
 from tests.inference.sample import CHAT_ENV, chat_response, configured_chat
@@ -23,6 +29,36 @@ from tests.ports.fakes import FakeLLM
 _BASIC = ProfileGroup.BASIC
 _COMMUNICATION = ProfileGroup.COMMUNICATION_PREFERENCES
 _CONSTRAINT = ProfileGroup.CONSTRAINTS
+
+
+def test_profile_evidence_impact_at_effective_boundaries() -> None:
+    subject = EntityId("profile-user")
+    before = ProfileFactState(subject, Source.EXTRACTED, False, (_BASIC,), 100.0, 120.0)
+    later = replace(before, valid_at=110.0)
+    created = changed_profile_evidence(
+        ((None, before), (None, later), (before, before)), subject
+    )
+    future = profile_evidence_impact(created, at=99.0)
+    assert future.dirty == set()
+    assert future.expiries == []
+    assert future.transitions == {_BASIC: 100.0}
+
+    active = profile_evidence_impact(created, at=100.0)
+    assert active.dirty == {_BASIC}
+    assert active.transitions == {_BASIC: 110.0}
+
+    moved = replace(before, groups=(_CONSTRAINT,))
+    reclassified = changed_profile_evidence(((before, moved),), subject)
+    assert profile_evidence_impact(reclassified, at=100.0).dirty == {
+        _BASIC,
+        _CONSTRAINT,
+    }
+    for after in (None, moved, replace(before, sensitive=True)):
+        changes = changed_profile_evidence(((before, after),), subject)
+        expired = profile_evidence_impact(changes, at=120.0)
+        assert expired.dirty == set()
+        assert expired.expiries == [(frozenset({_BASIC}), 120.0)]
+        assert expired.transitions == {}
 
 
 class _ProfileLLM(FakeLLM):
